@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "harness-dft"
+version = "0.1.0"
+description = "Resource-adaptive DFT orchestration harness built on Quantum ESPRESSO, AiiDA, and ASE"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "ase>=3.23",
+    "aiida-core>=2.5",
+    "aiida-quantumespresso>=4.10",
+    "aiida-pseudo>=1.4",
+    "spglib>=2.0",
+    "psutil>=5.9",
+]
+
+[project.scripts]
+harness-dft = "harness_dft.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
