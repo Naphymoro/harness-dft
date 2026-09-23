@@ -89,16 +89,22 @@ QE-GPU needs `nvfortran`/CUDA Fortran, which is **not available via conda-forge 
 (checked directly — no `nvhpc`/`nvfortran`/`hpc-sdk` package exists there as of this writing). It's built here
 instead from NVIDIA's own HPC SDK tarball installer (self-contained, installs into a user-writable prefix, no
 sudo needed), against QE's CMake build with `-DQE_ENABLE_CUDA=ON -DQE_GPU_ARCHS=sm_89 -DQE_ENABLE_OPENMP=OFF`
-(the last flag avoids a real GNU-libgomp/NVHPC-OpenMP runtime clash hit during the build). Registered as
-`pw-7.5-gpu@localhost`, distinct from the CPU `pw-7.5@localhost`. See `docs/gpu-build.md` for the full runbook,
-the two build bugs hit and fixed, and validation results (GPU vs. CPU energy for bulk Si agree to 9 significant
-figures, through the harness's own automatic `local-gpu` routing). Only `pw.x` was built, on one GPU architecture
-(Ada Lovelace, compute capability 8.9) — treat any other workflow/architecture as unvalidated until tried.
+(the last flag avoids a real GNU-libgomp/NVHPC-OpenMP runtime clash hit during the build). `make all` from that
+same build tree produced the entire QE suite; every code this harness has workflow support for is registered
+GPU-side: `pw-7.5-gpu`, `ph-7.5-gpu`, `dos-7.5-gpu`, `projwfc-7.5-gpu`, `q2r-7.5-gpu`, `matdyn-7.5-gpu`,
+`neb-7.5-gpu` (the last unused by any current workflow — see below), each distinct from its CPU `*-7.5@localhost`
+counterpart. See `docs/gpu-build.md` for the full runbook, all four build/integration bugs hit and fixed, and
+validation results: GPU vs. CPU SCF energy for bulk Si agrees to 9 significant figures, and the full phonon chain
+(`ph`→`q2r`→`matdyn`) and PDOS both ran to completion on GPU codes through the harness's own automatic
+`local-gpu` routing. Built and validated on one GPU architecture (Ada Lovelace, compute capability 8.9) and one
+small test structure — treat a different architecture, a larger system, or `hd_submit_relax`/`hd_submit_bands` on
+GPU (registered and code-path-identical, but not separately re-run after the routing fix) as unvalidated until
+tried.
 
 ## What's verified vs. not
 
-Live-tested against a real `pw.x` 7.5 run: `relax.py`, `converge.py` (both ecutwfc and k-point sweeps, via shared `eos.py` SCF builder). Also live-tested: `jobs.py`'s submit/poll/results round trip and the `harness-dft-mcp` server's read-only tools + `hd_submit_scf` on both CPU and GPU codes, against this machine's real AiiDA profile (see `mcp_server/README.md`'s "Verified vs. not" for the exact list). Structurally verified against installed `aiida-quantumespresso` 4.17.0 source but **not run live**: `bands_dos.py`, `phonons.py`, `eos.py`'s multi-point volume scan, `neb.py`, `remote.py` (no real SSH target), and GPU execution of anything other than `hd_submit_scf` (relax/bands/pdos/phonons on the GPU code are untested). Treat first real use of the untested modules as validation, not a known-good path.
+Live-tested against a real `pw.x` 7.5 run: `relax.py`, `converge.py` (both ecutwfc and k-point sweeps, via shared `eos.py` SCF builder). Also live-tested: `jobs.py`'s submit/poll/results round trip (including its recursive handling of namespaced outputs, e.g. PdosWorkChain's `dos.*`/`projwfc.*`) and the `harness-dft-mcp` server's read-only tools + `hd_submit_scf`/`hd_submit_ph`/`hd_submit_q2r`/`hd_submit_matdyn`/`hd_submit_pdos` on both CPU and GPU codes, against this machine's real AiiDA profile (see `mcp_server/README.md`'s "Verified vs. not" for the exact list). Structurally verified against installed `aiida-quantumespresso` 4.17.0 source but **not run live**: `eos.py`'s multi-point volume scan, `neb.py`, `remote.py` (no real SSH target), and `hd_submit_relax`/`hd_submit_bands` specifically on a GPU code (the CPU path and the analogous `hd_submit_scf`/`hd_submit_ph` GPU paths are both live-tested, but these two combinations weren't separately re-run). Treat first real use of the untested combinations as validation, not a known-good path.
 
 ## Not yet wired up
 
-Remote HPC execution has no specific cluster configured — `remote.py`/`dft-submit-remote` are generic scaffolding, deliberately not tied to any particular cluster's hostname/scheduler/module system. GPU QE covers only `pw.x` on one GPU architecture so far (see `docs/gpu-build.md`); the rest of the GPU-enabled suite (`ph.x`, etc.) was not built, so phonon workflows still route to CPU regardless of `allow_gpu`.
+Remote HPC execution has no specific cluster configured — `remote.py`/`dft-submit-remote` are generic scaffolding, deliberately not tied to any particular cluster's hostname/scheduler/module system. GPU QE covers every code this harness has workflow support for, on one GPU architecture so far (see `docs/gpu-build.md`); `neb.x`, `cp.x`, `pwcond.x`, `epw.x`, `hp.x`, `xspectra.x` and the rest of the wider QE suite were built (via `make all`, they came along for free) but are not registered as AiiDA codes since nothing in this harness drives them yet.

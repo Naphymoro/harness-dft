@@ -83,8 +83,25 @@ def wait_for_job(pk: int, timeout_seconds: float = 60, poll_interval: float = 1.
     return status
 
 
+def _serialize_output(orm, value):
+    """Recurse into a nested output-namespace dict (e.g. PdosWorkChain's
+    `dos.*`/`projwfc.*` sub-namespaces); leaf nodes get the same
+    Dict/scalar/reference treatment regardless of nesting depth."""
+    if isinstance(value, dict):
+        return {key: _serialize_output(orm, sub_value) for key, sub_value in value.items()}
+    if isinstance(value, orm.Dict):
+        return value.get_dict()
+    if isinstance(value, (orm.Float, orm.Int, orm.Str, orm.Bool)):
+        return value.value
+    # Structures, folders, arrays etc.: identify by pk/uuid rather than
+    # trying to serialize potentially large binary/array content.
+    return {"node_type": type(value).__name__, "pk": value.pk, "uuid": value.uuid}
+
+
 def get_results(pk: int) -> dict:
-    """Return a plain-dict view of a finished node's output namespace.
+    """Return a plain-dict view of a finished node's output namespace,
+    including namespaced sub-outputs (e.g. a PdosWorkChain's `dos.output_dos`
+    comes back as `results["dos"]["output_dos"]`, not dropped or flattened).
     Raises if the node hasn't reached a terminal state, or finished with a
     non-zero exit status (the caller should check `get_status` first)."""
     from aiida import orm
@@ -101,18 +118,7 @@ def get_results(pk: int) -> dict:
     # has no `.items()`. The outgoing-links API is what actually enumerates
     # them; filtering to RETURN links excludes CALL_CALC/CALL_WORK links to
     # sub-processes (e.g. a restarted calculation's `iteration_01`), and
-    # `.nested()` groups namespaced outputs (e.g. `base.pw.x`) into nested
-    # dicts instead of flattening dotted labels.
-    results = {}
-    for key, value in node.base.links.get_outgoing(link_type=LinkType.RETURN).nested().items():
-        if isinstance(value, dict):  # a nested output namespace, not a single node
-            continue
-        if isinstance(value, orm.Dict):
-            results[key] = value.get_dict()
-        elif isinstance(value, (orm.Float, orm.Int, orm.Str, orm.Bool)):
-            results[key] = value.value
-        else:
-            # Structures, folders, arrays etc.: identify by pk/uuid rather than
-            # trying to serialize potentially large binary/array content.
-            results[key] = {"node_type": type(value).__name__, "pk": value.pk, "uuid": value.uuid}
-    return results
+    # `.nested()` groups namespaced outputs (e.g. `dos.output_dos`) into
+    # nested dicts instead of flattening dotted labels.
+    nested = node.base.links.get_outgoing(link_type=LinkType.RETURN).nested()
+    return {key: _serialize_output(orm, value) for key, value in nested.items()}

@@ -280,6 +280,9 @@ def create_server(settings=None, host="127.0.0.1", port=8000):
         kpoints_mesh: KMesh = (4, 4, 4),
         ecutwfc_ry: float = 40.0,
         allow_remote: bool = False,
+        allow_gpu: bool = False,
+        cpu_batch_size: Annotated[int, Field(ge=1, le=256)] = 8,
+        local_atom_ceiling: int = 40,
     ) -> dict:
         """Submit PwBandsWorkChain (SCF + auto k-path bands via seekpath) on an
         ALREADY-RELAXED structure. Use hd_submit_relax first if it isn't."""
@@ -290,6 +293,7 @@ def create_server(settings=None, host="127.0.0.1", port=8000):
         builder, scf_plan, bands_plan = build_bands_inputs(
             atoms, code_label, pseudo_family_label=pseudo_family_label, protocol=protocol,
             kpoints_mesh=kpoints_mesh, ecutwfc_ry=ecutwfc_ry, allow_remote=allow_remote,
+            allow_gpu=allow_gpu, cpu_batch_size=cpu_batch_size, local_atom_ceiling=local_atom_ceiling,
         )
         pk = submit_builder(builder, label="harness-dft bands (MCP)")
         return {"pk": pk, "scf_plan": _plan_dict(scf_plan), "bands_plan": _plan_dict(bands_plan)}
@@ -306,9 +310,15 @@ def create_server(settings=None, host="127.0.0.1", port=8000):
         kpoints_mesh: KMesh = (4, 4, 4),
         ecutwfc_ry: float = 40.0,
         allow_remote: bool = False,
+        allow_gpu: bool = False,
+        cpu_batch_size: Annotated[int, Field(ge=1, le=256)] = 8,
+        local_atom_ceiling: int = 40,
     ) -> dict:
         """Submit PdosWorkChain (SCF + denser NSCF + dos.x + projwfc.x) on an
-        ALREADY-RELAXED structure."""
+        ALREADY-RELAXED structure. allow_gpu/cpu_batch_size only affect the
+        scf/nscf pw.x steps -- dos_code_label/projwfc_code_label pointed at a
+        GPU-built code select it, but dos.x/projwfc.x get no adaptive resource
+        plan at all (pre-existing, not GPU-specific)."""
         from harness_dft.workflows.bands_dos import build_pdos_inputs
         from harness_dft.jobs import submit_builder
 
@@ -317,6 +327,7 @@ def create_server(settings=None, host="127.0.0.1", port=8000):
             atoms, pw_code_label, dos_code_label, projwfc_code_label,
             pseudo_family_label=pseudo_family_label, protocol=protocol,
             kpoints_mesh=kpoints_mesh, ecutwfc_ry=ecutwfc_ry, allow_remote=allow_remote,
+            allow_gpu=allow_gpu, cpu_batch_size=cpu_batch_size, local_atom_ceiling=local_atom_ceiling,
         )
         pk = submit_builder(builder, label="harness-dft pdos (MCP)")
         return {"pk": pk, "scf_plan": _plan_dict(scf_plan), "nscf_plan": _plan_dict(nscf_plan)}
@@ -335,6 +346,9 @@ def create_server(settings=None, host="127.0.0.1", port=8000):
         protocol: Literal["fast", "moderate", "precise"] = "fast",
         is_metal: bool = False,
         allow_remote: bool = False,
+        allow_gpu: bool = False,
+        cpu_batch_size: Annotated[int, Field(ge=1, le=256)] = 8,
+        local_atom_ceiling: int = 40,
     ) -> dict:
         """Submit PhBaseWorkChain (DFPT) from a finished SCF's remote_folder.
         Step 1 of the phonon chain: hd_submit_ph -> hd_submit_q2r -> hd_submit_matdyn."""
@@ -347,6 +361,7 @@ def create_server(settings=None, host="127.0.0.1", port=8000):
         builder, plan = build_ph_inputs(
             parent_node, ph_code_label, atoms, pseudo_family_label, ecutwfc_ry,
             qpoints_mesh=qpoints_mesh, protocol=protocol, is_metal=is_metal, allow_remote=allow_remote,
+            allow_gpu=allow_gpu, cpu_batch_size=cpu_batch_size, local_atom_ceiling=local_atom_ceiling,
         )
         pk = submit_builder(builder, label="harness-dft ph (MCP)")
         return {"pk": pk, "plan": _plan_dict(plan)}

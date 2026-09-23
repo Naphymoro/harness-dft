@@ -90,17 +90,29 @@ authenticating proxy, never `0.0.0.0`.
 
 ## Verified vs. not
 
-Live-verified against this machine's real AiiDA profile and QE 7.5: `hd_status`, `hd_estimate`,
-`hd_validate_pseudo_coverage`, and a full `hd_submit_scf` → `hd_wait_for_job` → `hd_get_job_results` round trip on
-bulk Si (converged SCF, correct energy) on **both** `pw-7.5@localhost` (CPU) and `pw-7.5-gpu@localhost` (GPU,
-built per `docs/gpu-build.md`) — energies agree to 9 significant figures, and the tool's own `allow_gpu=True`
-routing picked `target="local-gpu"`/`mpiprocs=1` without any manual override. This comparison caught a real bug
-(`allow_gpu`/`cpu_batch_size`/`local_atom_ceiling` were declared as tool parameters but not forwarded to the
-builder functions) — fixed, with a regression test. **Not live-verified**: `hd_submit_relax` (the underlying
-`relax.py` is itself live-tested outside the MCP layer per the package README, but not driven through this
-server), `hd_submit_bands`/`hd_submit_pdos`/`hd_submit_ph`/`hd_submit_q2r`/`hd_submit_matdyn` (their builders are
-structurally verified per the package README, not run live through this server, and none has a GPU-built code to
-route to since only `pw.x` was GPU-built), `hd_submit_neb` (never run live at all yet),
+Live-verified against this machine's real AiiDA profile and QE 7.5, on both CPU (`*-7.5@localhost`) and GPU
+(`*-7.5-gpu@localhost`, built per `docs/gpu-build.md`) codes:
+
+- `hd_status`, `hd_estimate`, `hd_validate_pseudo_coverage` (read-only).
+- `hd_submit_scf` → `hd_wait_for_job` → `hd_get_job_results` on bulk Si: CPU vs. GPU energy agree to 9 significant
+  figures; `allow_gpu=True` correctly picks `target="local-gpu"`/`mpiprocs=1`.
+- The full phonon chain, GPU codes: `hd_submit_ph` → `hd_submit_q2r` → `hd_submit_matdyn`, all
+  `exit_status=0`/`is_finished_ok=True`, `matdyn`'s output includes `output_phonon_bands`.
+- `hd_submit_pdos`, GPU codes (`pw`+`dos`+`projwfc`): finishes successfully, results correctly include the
+  namespaced `dos.output_dos`/`projwfc.Dos`/`projwfc.Pdos`/`projwfc.projections` outputs.
+
+This exercise caught **two real bugs**, both fixed with regression tests: (1) `hd_submit_relax`/`hd_submit_scf`/
+`hd_submit_ph`/`hd_submit_bands`/`hd_submit_pdos` variously either dropped `allow_gpu`/`cpu_batch_size`/
+`local_atom_ceiling` on the way to their builder functions, or (for `hd_submit_ph`/`hd_submit_bands`/
+`hd_submit_pdos`) didn't declare those parameters at all — caught by a real GPU submission coming back with a
+CPU-style 8-rank plan instead of the correct 1-rank-per-GPU one; (2) `hd_get_job_results`/`harness_dft.jobs.
+get_results` silently dropped every namespaced output (`PdosWorkChain`'s `dos.*`/`projwfc.*`), so a successfully
+finished PDOS job returned an empty dict with no error — fixed by recursing into nested output namespaces instead
+of skipping them.
+
+**Not live-verified**: `hd_submit_relax`/`hd_submit_bands` specifically on a GPU code (the parameter-forwarding
+fix is identical to the live-tested `hd_submit_scf`/`hd_submit_ph` paths and covered by a regression test, but
+these two combinations weren't separately re-run end-to-end), `hd_submit_neb` (never run live at all),
 `hd_setup_remote_computer`/`hd_register_remote_code` (no real SSH target). Treat first real use of each as
 validation.
 

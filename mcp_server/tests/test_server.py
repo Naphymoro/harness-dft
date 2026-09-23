@@ -95,6 +95,54 @@ def test_submit_scf_forwards_allow_gpu_and_cpu_batch_size_to_the_plan(mcp, monke
     assert result["plan"]["cpu_batch_size"] == 4
 
 
+def test_submit_bands_forwards_allow_gpu_and_cpu_batch_size_to_the_plan(mcp, monkeypatch):
+    """Same regression as above, for hd_submit_bands (build_bands_inputs also
+    used to drop allow_gpu/cpu_batch_size/local_atom_ceiling)."""
+    import harness_dft.jobs as jobs_module
+    monkeypatch.setattr(jobs_module, "submit_builder", lambda builder, label=None: -1)
+
+    result = _call(mcp, "hd_submit_bands", {
+        "structure_text": SI_CIF, "structure_format": "cif", "code_label": "pw-7.5@localhost",
+        "kpoints_mesh": [2, 2, 2], "ecutwfc_ry": 30.0, "cpu_batch_size": 4,
+    })
+    assert result["scf_plan"]["cpu_batch_size"] == 4
+    assert result["bands_plan"]["cpu_batch_size"] == 4
+
+
+def test_submit_ph_forwards_allow_gpu_and_cpu_batch_size_to_the_plan(mcp, monkeypatch):
+    """Same regression, for hd_submit_ph (build_ph_inputs had no
+    allow_gpu/cpu_batch_size/local_atom_ceiling parameters at all until this
+    was caught by an actual GPU phonon submission getting a CPU-style plan
+    despite allow_gpu=True). Uses the most recent finished SCF-like node
+    already in this dev profile as the DFPT parent, since PhBaseWorkChain's
+    builder validates parent_folder against a real RemoteData output -- skips
+    if none exists (e.g. a fresh profile with no prior harness-dft runs)."""
+    from aiida import orm
+    from aiida.common import LinkType
+
+    query = orm.QueryBuilder().append(
+        orm.WorkChainNode, filters={"attributes.process_label": "PwBaseWorkChain"}, tag="wc",
+    ).order_by({"wc": {"id": "desc"}})
+    parent_pk = None
+    for (node,) in query.iterall():
+        if node.is_finished_ok and node.base.links.get_outgoing(link_type=LinkType.RETURN).nested().get("remote_folder"):
+            parent_pk = node.pk
+            break
+    if parent_pk is None:
+        pytest.skip("no finished PwBaseWorkChain with a remote_folder output in this profile yet")
+
+    import harness_dft.jobs as jobs_module
+    monkeypatch.setattr(jobs_module, "submit_builder", lambda builder, label=None: -1)
+
+    result = _call(mcp, "hd_submit_ph", {
+        "parent_scf_pk": parent_pk, "ph_code_label": "ph-7.5@localhost",
+        "structure_text": SI_CIF, "structure_format": "cif",
+        "pseudo_family_label": "SSSP/1.3/PBE/efficiency", "ecutwfc_ry": 30.0,
+        "qpoints_mesh": [1, 1, 1], "allow_gpu": True, "cpu_batch_size": 4,
+    })
+    assert result["plan"]["cpu_batch_size"] == 4
+
+
 def test_estimate_quantizes_mpiprocs_to_a_batch_and_does_not_submit(mcp):
     before = _call(mcp, "hd_status", {})
     estimate = _call(mcp, "hd_estimate", {"structure_text": SI_CIF, "structure_format": "cif"})

@@ -20,6 +20,9 @@ def build_ph_inputs(
     protocol: str = "fast",
     is_metal: bool = False,
     allow_remote: bool = False,
+    allow_gpu: bool = False,
+    cpu_batch_size: int = 8,
+    local_atom_ceiling: int = 40,
 ):
     """Build a PhBaseWorkChain from a finished PwBaseWorkChain/PwCalculation
     node's remote_folder. `atoms` is the same structure the parent SCF ran
@@ -43,6 +46,7 @@ def build_ph_inputs(
 
     plan = apply_resource_plan(
         builder.ph, atoms, pseudo_family_label, ecutwfc_ry, qpoints_mesh, allow_remote=allow_remote,
+        allow_gpu=allow_gpu, cpu_batch_size=cpu_batch_size, local_atom_ceiling=local_atom_ceiling,
     )
     return builder, plan
 
