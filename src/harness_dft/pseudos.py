@@ -3,9 +3,32 @@ from __future__ import annotations
 
 from ase import Atoms
 
+# The full SSSP 1.3 library this harness installs by default: both
+# functionals used in the QE/AiiDA ecosystem, at both accuracy protocols.
+# `aiida_quantumespresso`'s `get_builder_from_protocol()` hardcodes
+# SSSP/1.3/PBEsol/* for its own "fast"/"balanced"/"stringent" protocols --
+# passing PBE requires an explicit override (see dft-pseudo-select skill) --
+# so both functionals need to actually be installed, not just PBE.
+SSSP_FULL_LIBRARY = (
+    "SSSP/1.3/PBE/efficiency",
+    "SSSP/1.3/PBE/precision",
+    "SSSP/1.3/PBEsol/efficiency",
+    "SSSP/1.3/PBEsol/precision",
+)
+
 
 class MissingPseudopotentialError(RuntimeError):
     pass
+
+
+def list_installed_families() -> list[str]:
+    """Return the labels of every aiida-pseudo family group actually
+    installed in the loaded AiiDA profile (not just the ones this harness
+    knows the canonical names for)."""
+    from aiida import orm
+    from aiida_pseudo.groups.family import PseudoPotentialFamily
+
+    return sorted(group.label for group in orm.QueryBuilder().append(PseudoPotentialFamily).all(flat=True))
 
 
 def validate_family_covers_structure(atoms: Atoms, family_label: str) -> None:

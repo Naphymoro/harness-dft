@@ -25,6 +25,9 @@ def build_scf_inputs(
     kpoints_mesh: tuple[int, int, int] = (4, 4, 4),
     ecutwfc_ry: float = 40.0,
     allow_remote: bool = False,
+    allow_gpu: bool = False,
+    cpu_batch_size: int = 8,
+    local_atom_ceiling: int = 40,
 ):
     """Return (builder, plan) for a single-point SCF via PwBaseWorkChain."""
     from aiida import orm
@@ -48,7 +51,8 @@ def build_scf_inputs(
     apply_calculation_settings(builder, kpoints_mesh, ecutwfc_ry)
     plan = apply_resource_plan(
         builder.pw, atoms, pseudo_family_label, ecutwfc_ry, kpoints_mesh,
-        allow_remote=allow_remote,
+        allow_remote=allow_remote, allow_gpu=allow_gpu,
+        cpu_batch_size=cpu_batch_size, local_atom_ceiling=local_atom_ceiling,
     )
     return builder, plan
 

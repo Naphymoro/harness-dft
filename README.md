@@ -1,16 +1,18 @@
 # harness-dft
 
-A resource-adaptive DFT orchestration harness built on **Quantum ESPRESSO**, **AiiDA** (via `aiida-quantumespresso`), and **ASE**.
+A resource-adaptive DFT orchestration harness built on **Quantum ESPRESSO**, **AiiDA** (via `aiida-quantumespresso`), and **ASE** — drivable directly (CLI/Python) or through **DeerFlow** via the `harness-dft-mcp` server and `dft-harness` skill.
 
-This is not another DFT engine — it's an automation layer. Quantum ESPRESSO does the physics, AiiDA drives it with provenance and (eventually) remote HPC submission, and ASE handles structure building/analysis and the cases that don't need full provenance. `src/harness_dft/` adds one thing on top: an estimate of how much compute a job actually needs, applied automatically to mpiprocs/npool/walltime, so calculations don't have to be hand-tuned for every structure.
+This is not another DFT engine — it's an automation layer. Quantum ESPRESSO does the physics, AiiDA drives it with provenance and remote HPC submission, and ASE handles structure building/analysis and the cases that don't need full provenance. `src/harness_dft/` adds one thing on top: an estimate of how much compute a job actually needs, applied automatically to mpiprocs/npool/walltime, so calculations don't have to be hand-tuned for every structure. CPU allocations are quantized to whole batches of `cpu_batch_size` CPUs (default 8, matching typical socket/NUMA-node scheduling granularity); GPU allocations use one MPI rank per GPU when a CUDA-built QE code is available and the job warrants it.
 
 (This is a separate project from `lengau_v221`/AtomX in this workspace, which is an independent from-scratch DFT implementation — harness-dft wraps the real QE package instead.)
 
 ## Architecture
 
 - **ASE** owns structure building/analysis and any calculation you want fast and local without provenance (see `workflows/neb.py`).
-- **AiiDA workchains** own anything needing provenance, automatic error-handling/restart, or (future) remote execution. The harness rarely calls `pw.x` directly — it builds AiiDA workchain inputs and lets `PwBaseWorkChain`'s existing error handlers (out-of-walltime, diagonalization errors, convergence failures) do the retry logic.
-- **`harness_dft.estimate`** fills the one real gap in both ecosystems: no built-in atom-count → resource estimator exists in AiiDA or QE. `harness_dft.builders.apply_resource_plan` uses it to set `metadata.options` (mpiprocs, walltime) and `parallelization` (npool) on every workchain builder, and to *recommend* local vs. remote routing (`harness_dft.estimate.choose_resources`) — though remote execution itself needs a configured remote AiiDA computer (see `dft-submit-remote` skill; no specific cluster is pre-wired).
+- **AiiDA workchains** own anything needing provenance, automatic error-handling/restart, or remote execution. The harness rarely calls `pw.x` directly — it builds AiiDA workchain inputs and lets `PwBaseWorkChain`'s existing error handlers (out-of-walltime, diagonalization errors, convergence failures) do the retry logic.
+- **`harness_dft.estimate`** fills the one real gap in both ecosystems: no built-in atom-count → resource estimator exists in AiiDA or QE. `harness_dft.builders.apply_resource_plan` uses it to set `metadata.options` (mpiprocs, walltime) and `parallelization` (npool) on every workchain builder, and to *recommend* local vs. local-GPU vs. remote routing (`harness_dft.estimate.choose_resources`) — though remote execution itself needs a configured remote AiiDA computer (see `dft-submit-remote` skill; no specific cluster is pre-wired), and GPU execution needs a CUDA-built QE code registered (see "GPU build" below).
+- **`harness_dft.jobs`** is the submit-and-poll layer every `hd_submit_*` MCP tool uses: `aiida.engine.submit` + pk, rather than the blocking `run_get_node` the CLI/examples use, since an MCP tool call can't block for a multi-minute DFT run. Needs `verdi daemon start`.
+- **`mcp_server/`** exposes all of this to an agent harness (DeerFlow) as typed MCP tools; see `mcp_server/README.md` and the `deer-flow/skills/public/dft-harness/` skill. Its first rule: ask whether to run locally or on remote HPC before planning anything, rather than assuming.
 
 ## Setup
 
@@ -27,8 +29,13 @@ verdi presto --profile-name dft-harness
 verdi code create core.code.installed -L pw-7.5 -Y localhost -X ~/.local/bin/pw.x -P quantumespresso.pw --with-mpi --non-interactive
 # ...repeat for dos.x/projwfc.x/ph.x/q2r.x/matdyn.x/neb.x with matching plugin entry points
 
-# Pseudopotentials
+# Pseudopotentials -- the full SSSP 1.3 library (both functionals used across the QE/AiiDA
+# ecosystem, at both accuracy protocols; get_builder_from_protocol()'s own fast/moderate/precise
+# protocols default to PBEsol, so PBE-only coverage is not enough even for PBE-family work).
 aiida-pseudo install sssp --version 1.3 --functional PBE --protocol efficiency
+aiida-pseudo install sssp --version 1.3 --functional PBE --protocol precision
+aiida-pseudo install sssp --version 1.3 --functional PBEsol --protocol efficiency
+aiida-pseudo install sssp --version 1.3 --functional PBEsol --protocol precision
 ```
 
 Install the harness package itself:
@@ -55,27 +62,40 @@ Relaxes bulk Si and prints the equilibrium lattice parameter — should land clo
 
 | Module | Purpose |
 |---|---|
-| `environment.py` | Detect local CPU/RAM/GPU |
-| `estimate.py` | Heuristic resource estimation + local/remote routing decision |
+| `environment.py` | Detect local CPU/RAM/GPU (name, count, VRAM) |
+| `estimate.py` | Heuristic resource estimation + local/local-GPU/remote routing decision, CPU-batch quantization |
 | `structures.py` | ASE <-> AiiDA structure conversion, electron counting |
-| `pseudos.py` | Pseudopotential family validation |
+| `pseudos.py` | Pseudopotential family validation, full-library constant, installed-family listing |
 | `builders.py` | Shared logic: apply calculation settings (ecutwfc/kpoints) + resource plan to any PwBaseWorkChain-shaped builder |
 | `remote.py` | Generic (cluster-agnostic) SSH computer/code setup |
+| `jobs.py` | Submit-and-poll layer (`aiida.engine.submit` + pk) for callers that can't block for a full run, e.g. the MCP server |
 | `workflows/relax.py` | `PwRelaxWorkChain` wrapper |
 | `workflows/converge.py` | k-point / ecutwfc convergence sweeps |
 | `workflows/eos.py` | Volume scan + ASE `EquationOfState` fit |
 | `workflows/bands_dos.py` | `PwBandsWorkChain` + `PdosWorkChain` wrappers |
 | `workflows/phonons.py` | `PhBaseWorkChain` -> `Q2rBaseWorkChain` -> `MatdynBaseWorkChain` pipeline |
 | `workflows/neb.py` | ASE-native NEB with QE as the force engine (no AiiDA provenance) |
+| `mcp_server/` | `harness-dft-mcp`: exposes the above to DeerFlow as MCP tools (`hd_*`) |
 
 ## Claude Code Skills
 
 `.claude/skills/` has one playbook per workflow (`dft-relax`, `dft-converge`, `dft-bands-dos`, `dft-eos`, `dft-phonons`, `dft-neb`, `dft-pseudo-select`, `dft-submit-remote`) — each documents prerequisites, exact API usage, and gotchas actually hit while building this (e.g. the ecutwfc-override bug, the PBE-vs-PBEsol pseudo family mismatch). Read the relevant one before using a workflow module for the first time in a session.
 
+For driving this through DeerFlow instead, see `deer-flow/skills/public/dft-harness/` and `mcp_server/README.md`.
+
+## GPU build
+
+QE-GPU needs `nvfortran`/CUDA Fortran, which is **not available via conda-forge or the `nvidia` conda channel**
+(checked directly — no `nvhpc`/`nvfortran`/`hpc-sdk` package exists there as of this writing). It's built here
+instead from NVIDIA's own HPC SDK tarball installer (self-contained, installs into a user-writable prefix, no
+sudo needed), against QE's CMake build with `-DQE_ENABLE_CUDA=ON`. See `docs/gpu-build.md` for the exact steps and
+current status — this is the newest, least-verified part of the harness; treat the first real GPU job as
+validation, not a known-good path, and fall back to CPU (`allow_gpu=False`) if it misbehaves.
+
 ## What's verified vs. not
 
-Live-tested against a real `pw.x` 7.5 run: `relax.py`, `converge.py` (both ecutwfc and k-point sweeps, via shared `eos.py` SCF builder). Structurally verified against installed `aiida-quantumespresso` 4.17.0 source but **not run live**: `bands_dos.py`, `phonons.py`, `eos.py`'s multi-point volume scan, `neb.py`, `remote.py` (no real SSH target). Treat first real use of the untested modules as validation, not a known-good path.
+Live-tested against a real `pw.x` 7.5 run: `relax.py`, `converge.py` (both ecutwfc and k-point sweeps, via shared `eos.py` SCF builder). Also live-tested: `jobs.py`'s submit/poll/results round trip and the `harness-dft-mcp` server's read-only tools + `hd_submit_scf`, against this machine's real AiiDA profile (see `mcp_server/README.md`'s "Verified vs. not" for the exact list). Structurally verified against installed `aiida-quantumespresso` 4.17.0 source but **not run live**: `bands_dos.py`, `phonons.py`, `eos.py`'s multi-point volume scan, `neb.py`, `remote.py` (no real SSH target), and anything GPU (no CUDA-built QE code registered as of this writing). Treat first real use of the untested modules as validation, not a known-good path.
 
 ## Not yet wired up
 
-Remote HPC execution has no specific cluster configured — `remote.py`/`dft-submit-remote` are generic scaffolding, deliberately not tied to any particular cluster's hostname/scheduler/module system.
+Remote HPC execution has no specific cluster configured — `remote.py`/`dft-submit-remote` are generic scaffolding, deliberately not tied to any particular cluster's hostname/scheduler/module system. GPU QE was mid-build as of this writing (see `docs/gpu-build.md`); no `pw-*-gpu@localhost` code is registered yet.

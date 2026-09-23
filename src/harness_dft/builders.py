@@ -61,11 +61,15 @@ def apply_calculation_settings(base_builder, kpoints_mesh: tuple[int, int, int],
 
 def apply_resource_plan(pw_builder, atoms: Atoms, pseudo_family_label: str,
                          ecutwfc_ry: float, kpoints_mesh: tuple[int, int, int],
-                         allow_remote: bool = False, local_atom_ceiling: int = 40):
+                         allow_remote: bool = False, allow_gpu: bool = False,
+                         local_atom_ceiling: int = 40, cpu_batch_size: int = 8):
     """Mutate a PwCalculation builder namespace (e.g. `builder.pw` for
     PwBaseWorkChain, or `builder.base.pw` for PwRelaxWorkChain) in place with
     an estimated mpiprocs/npool/walltime, and return the ExecutionPlan used
-    so callers can log/inspect the decision (e.g. to pick a remote code)."""
+    so callers can log/inspect the decision (e.g. to pick a remote or GPU
+    code -- this function only sets resource options, it never swaps
+    `pw_builder.code` itself, since it doesn't know what codes are registered).
+    """
     from aiida import orm
 
     pseudo_family = orm.load_group(pseudo_family_label)
@@ -81,7 +85,8 @@ def apply_resource_plan(pw_builder, atoms: Atoms, pseudo_family_label: str,
         is_metal=is_likely_metal(atoms),
     )
     plan = choose_resources(
-        job, get_local_resources(), allow_remote=allow_remote, local_atom_ceiling=local_atom_ceiling,
+        job, get_local_resources(), allow_remote=allow_remote, allow_gpu=allow_gpu,
+        local_atom_ceiling=local_atom_ceiling, cpu_batch_size=cpu_batch_size,
     )
 
     pw_builder.metadata.options.resources = {

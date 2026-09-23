@@ -31,11 +31,12 @@ class JobEstimate:
 
 @dataclass(frozen=True)
 class ExecutionPlan:
-    target: str  # "local" or "remote"
+    target: str  # "local", "local-gpu", or "remote"
     mpiprocs: int
     npool: int
     walltime_seconds: int
     reason: str
+    cpu_batch_size: int = 8
 
 
 def estimate_plane_waves(cell_volume_ang3: float, ecutwfc_ry: float) -> int:
@@ -83,24 +84,59 @@ def _largest_divisor_at_most(n: int, limit: int) -> int:
     return 1
 
 
+def _quantize_mpiprocs(raw: int, batch_size: int, cpu_ceiling: int) -> int:
+    """Snap an mpiprocs estimate to a whole number of `batch_size`-CPU
+    batches (default 8, a common socket/NUMA-node granularity), rounding
+    *up* so small jobs still get one full batch's worth of ranks -- QE's
+    per-rank overhead makes single-digit rank counts inefficient anyway --
+    but never past what the machine (or `cpu_ceiling`) actually has.
+
+    A machine/allocation with fewer CPUs than one batch just gets all of
+    them; batching only kicks in once there's at least one full batch to give.
+    """
+    if cpu_ceiling < batch_size:
+        return max(1, cpu_ceiling)
+    batches_available = cpu_ceiling // batch_size
+    batches_wanted = max(1, math.ceil(raw / batch_size))
+    return min(batches_wanted, batches_available) * batch_size
+
+
 def choose_resources(
     job: JobEstimate,
     local: LocalResources,
     allow_remote: bool = False,
+    allow_gpu: bool = False,
     local_atom_ceiling: int = 40,
+    cpu_batch_size: int = 8,
+    remote_mpiprocs_ceiling: int = 128,
+    gpu_min_atoms: int = 8,
 ) -> ExecutionPlan:
-    """Pick an initial mpiprocs/npool/walltime and decide local vs remote.
+    """Pick an initial mpiprocs/npool/walltime and decide local vs local-gpu
+    vs remote.
 
     Routing rule: prefer local unless the job's estimated memory exceeds a
     safe fraction of local RAM, or the atom count passes a configurable
     ceiling meant to keep local runs fast for interactive use. Remote is only
     chosen if `allow_remote` is True and a remote computer/code has actually
     been configured by the caller -- this function doesn't know whether one
-    exists, it only recommends.
+    exists, it only recommends. `allow_gpu` similarly only recommends
+    "local-gpu"; the caller must have an actual CUDA-built QE code registered
+    to act on it (see `harness_dft.remote`/the `dft-harness` MCP tools).
+
+    CPU-target mpiprocs (`local` and `remote`) are quantized to whole
+    `cpu_batch_size`-CPU batches -- resource allocation in increments of a
+    socket/NUMA node, not single cores, is both what real clusters schedule
+    in and what keeps QE's MPI communication pattern efficient. GPU targets
+    use a different rule entirely: one MPI rank per GPU is QE-GPU's supported
+    parallelization model, so batching by CPU count does not apply there.
     """
     memory_headroom_gb = local.memory_gb * 0.7
     exceeds_memory = job.estimated_memory_gb > memory_headroom_gb
     exceeds_atom_ceiling = job.n_atoms > local_atom_ceiling
+    fits_locally = not (exceeds_memory or exceeds_atom_ceiling)
+
+    gpu_memory_headroom_gb = local.gpu_memory_gb * 0.7
+    exceeds_gpu_memory = local.gpu_memory_gb > 0 and job.estimated_memory_gb > gpu_memory_headroom_gb
 
     if allow_remote and (exceeds_memory or exceeds_atom_ceiling):
         target = "remote"
@@ -109,13 +145,26 @@ def choose_resources(
             f"exceeds local comfort threshold (RAM headroom {memory_headroom_gb:.1f} GB, "
             f"atom ceiling {local_atom_ceiling})"
         )
-        mpiprocs = min(job.n_kpoints * 4, 128)  # generic remote default; refine per-cluster
+        raw_remote = min(job.n_kpoints * 4, remote_mpiprocs_ceiling)  # generic remote default; refine per-cluster
+        mpiprocs = _quantize_mpiprocs(raw_remote, cpu_batch_size, remote_mpiprocs_ceiling)
+    elif allow_gpu and local.gpu_count > 0 and fits_locally and not exceeds_gpu_memory and job.n_atoms >= gpu_min_atoms:
+        target = "local-gpu"
+        mpiprocs = local.gpu_count  # one MPI rank per GPU -- QE-GPU's supported model, not a CPU-core count
+        reason = (
+            f"GPU offload available ({local.gpu_count}x {local.gpu_name or 'GPU'}); "
+            f"{job.n_atoms} atoms clears the {gpu_min_atoms}-atom floor where kernel-launch "
+            "overhead starts paying off, and the job fits GPU VRAM"
+        )
     else:
         target = "local"
-        reason = "fits within local resource budget" if not (exceeds_memory or exceeds_atom_ceiling) else (
-            "exceeds local comfort threshold but no remote target configured; running local anyway"
-        )
-        mpiprocs = min(local.cpu_count, max(1, job.n_atoms))
+        raw_local = min(local.cpu_count, max(1, job.n_atoms))
+        mpiprocs = _quantize_mpiprocs(raw_local, cpu_batch_size, local.cpu_count)
+        if fits_locally:
+            reason = "fits within local resource budget"
+        elif allow_gpu and local.gpu_count > 0:
+            reason = "exceeds local comfort threshold; GPU offload rejected (too small or exceeds GPU VRAM), running local CPU"
+        else:
+            reason = "exceeds local comfort threshold but no remote target configured; running local anyway"
 
     npool = _largest_divisor_at_most(job.n_kpoints, mpiprocs) if job.n_kpoints > 1 else 1
 
@@ -130,4 +179,5 @@ def choose_resources(
         npool=npool,
         walltime_seconds=walltime,
         reason=reason,
+        cpu_batch_size=cpu_batch_size,
     )

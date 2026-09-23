@@ -17,6 +17,9 @@ def build_relax_inputs(
     kpoints_mesh: tuple[int, int, int] = (4, 4, 4),
     ecutwfc_ry: float = 40.0,
     allow_remote: bool = False,
+    allow_gpu: bool = False,
+    cpu_batch_size: int = 8,
+    local_atom_ceiling: int = 40,
 ):
     """Return (builder, plan) for a PwRelaxWorkChain run on `atoms`.
 
@@ -45,13 +48,15 @@ def build_relax_inputs(
 
     apply_calculation_settings(builder.base, kpoints_mesh, ecutwfc_ry)
     apply_calculation_settings(builder.base_final_scf, kpoints_mesh, ecutwfc_ry)
+    resource_kwargs = dict(
+        allow_remote=allow_remote, allow_gpu=allow_gpu,
+        cpu_batch_size=cpu_batch_size, local_atom_ceiling=local_atom_ceiling,
+    )
     plan = apply_resource_plan(
-        builder.base.pw, atoms, pseudo_family_label, ecutwfc_ry, kpoints_mesh,
-        allow_remote=allow_remote,
+        builder.base.pw, atoms, pseudo_family_label, ecutwfc_ry, kpoints_mesh, **resource_kwargs,
     )
     apply_resource_plan(
-        builder.base_final_scf.pw, atoms, pseudo_family_label, ecutwfc_ry, kpoints_mesh,
-        allow_remote=allow_remote,
+        builder.base_final_scf.pw, atoms, pseudo_family_label, ecutwfc_ry, kpoints_mesh, **resource_kwargs,
     )
     return builder, plan
 

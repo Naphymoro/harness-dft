@@ -5,6 +5,7 @@ from harness_dft.estimate import (
     estimate_job,
     estimate_plane_waves,
     _largest_divisor_at_most,
+    _quantize_mpiprocs,
 )
 
 
@@ -66,3 +67,49 @@ def test_npool_divides_kpoint_count():
     local = LocalResources(cpu_count=24, memory_gb=30.0, gpu_count=0)
     plan = choose_resources(job, local, allow_remote=False)
     assert job.n_kpoints % plan.npool == 0
+
+
+def test_quantize_mpiprocs_rounds_up_to_a_full_batch():
+    assert _quantize_mpiprocs(raw=2, batch_size=8, cpu_ceiling=24) == 8
+    assert _quantize_mpiprocs(raw=10, batch_size=8, cpu_ceiling=24) == 16
+    assert _quantize_mpiprocs(raw=30, batch_size=8, cpu_ceiling=24) == 24  # capped at 3 batches
+    assert _quantize_mpiprocs(raw=1, batch_size=8, cpu_ceiling=4) == 4  # fewer CPUs than one batch
+
+
+def test_choose_resources_quantizes_local_mpiprocs_to_batches_of_8():
+    job = estimate_job(
+        n_atoms=2, n_electrons=8, cell_volume_ang3=40.0, ecutwfc_ry=40.0, n_kpoints=1,
+    )
+    local = LocalResources(cpu_count=24, memory_gb=30.0, gpu_count=0)
+    plan = choose_resources(job, local, allow_remote=False)
+    assert plan.mpiprocs % 8 == 0
+    assert plan.mpiprocs == 8  # a 2-atom job still gets one full batch, capped by cpu_count
+
+
+def test_choose_resources_routes_to_gpu_when_allowed_and_available():
+    job = estimate_job(
+        n_atoms=32, n_electrons=128, cell_volume_ang3=500.0, ecutwfc_ry=40.0, n_kpoints=8,
+    )
+    local = LocalResources(cpu_count=24, memory_gb=30.0, gpu_count=1, gpu_name="RTX 2000 Ada", gpu_memory_gb=16.0)
+    plan = choose_resources(job, local, allow_gpu=True, gpu_min_atoms=8)
+    assert plan.target == "local-gpu"
+    assert plan.mpiprocs == local.gpu_count  # one rank per GPU, not a CPU batch
+
+
+def test_choose_resources_skips_gpu_below_atom_floor():
+    job = estimate_job(
+        n_atoms=2, n_electrons=8, cell_volume_ang3=40.0, ecutwfc_ry=40.0, n_kpoints=1,
+    )
+    local = LocalResources(cpu_count=24, memory_gb=30.0, gpu_count=1, gpu_name="RTX 2000 Ada", gpu_memory_gb=16.0)
+    plan = choose_resources(job, local, allow_gpu=True, gpu_min_atoms=8)
+    assert plan.target == "local"
+
+
+def test_choose_resources_skips_gpu_when_job_exceeds_gpu_vram():
+    job = estimate_job(
+        n_atoms=32, n_electrons=128, cell_volume_ang3=5_000_000.0, ecutwfc_ry=200.0, n_kpoints=8,
+    )
+    local = LocalResources(cpu_count=24, memory_gb=512.0, gpu_count=1, gpu_name="RTX 2000 Ada", gpu_memory_gb=16.0)
+    plan = choose_resources(job, local, allow_gpu=True, gpu_min_atoms=8, local_atom_ceiling=1000)
+    assert plan.target == "local"
+    assert "GPU" in plan.reason
