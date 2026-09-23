@@ -88,14 +88,17 @@ For driving this through DeerFlow instead, see `deer-flow/skills/public/dft-harn
 QE-GPU needs `nvfortran`/CUDA Fortran, which is **not available via conda-forge or the `nvidia` conda channel**
 (checked directly — no `nvhpc`/`nvfortran`/`hpc-sdk` package exists there as of this writing). It's built here
 instead from NVIDIA's own HPC SDK tarball installer (self-contained, installs into a user-writable prefix, no
-sudo needed), against QE's CMake build with `-DQE_ENABLE_CUDA=ON`. See `docs/gpu-build.md` for the exact steps and
-current status — this is the newest, least-verified part of the harness; treat the first real GPU job as
-validation, not a known-good path, and fall back to CPU (`allow_gpu=False`) if it misbehaves.
+sudo needed), against QE's CMake build with `-DQE_ENABLE_CUDA=ON -DQE_GPU_ARCHS=sm_89 -DQE_ENABLE_OPENMP=OFF`
+(the last flag avoids a real GNU-libgomp/NVHPC-OpenMP runtime clash hit during the build). Registered as
+`pw-7.5-gpu@localhost`, distinct from the CPU `pw-7.5@localhost`. See `docs/gpu-build.md` for the full runbook,
+the two build bugs hit and fixed, and validation results (GPU vs. CPU energy for bulk Si agree to 9 significant
+figures, through the harness's own automatic `local-gpu` routing). Only `pw.x` was built, on one GPU architecture
+(Ada Lovelace, compute capability 8.9) — treat any other workflow/architecture as unvalidated until tried.
 
 ## What's verified vs. not
 
-Live-tested against a real `pw.x` 7.5 run: `relax.py`, `converge.py` (both ecutwfc and k-point sweeps, via shared `eos.py` SCF builder). Also live-tested: `jobs.py`'s submit/poll/results round trip and the `harness-dft-mcp` server's read-only tools + `hd_submit_scf`, against this machine's real AiiDA profile (see `mcp_server/README.md`'s "Verified vs. not" for the exact list). Structurally verified against installed `aiida-quantumespresso` 4.17.0 source but **not run live**: `bands_dos.py`, `phonons.py`, `eos.py`'s multi-point volume scan, `neb.py`, `remote.py` (no real SSH target), and anything GPU (no CUDA-built QE code registered as of this writing). Treat first real use of the untested modules as validation, not a known-good path.
+Live-tested against a real `pw.x` 7.5 run: `relax.py`, `converge.py` (both ecutwfc and k-point sweeps, via shared `eos.py` SCF builder). Also live-tested: `jobs.py`'s submit/poll/results round trip and the `harness-dft-mcp` server's read-only tools + `hd_submit_scf` on both CPU and GPU codes, against this machine's real AiiDA profile (see `mcp_server/README.md`'s "Verified vs. not" for the exact list). Structurally verified against installed `aiida-quantumespresso` 4.17.0 source but **not run live**: `bands_dos.py`, `phonons.py`, `eos.py`'s multi-point volume scan, `neb.py`, `remote.py` (no real SSH target), and GPU execution of anything other than `hd_submit_scf` (relax/bands/pdos/phonons on the GPU code are untested). Treat first real use of the untested modules as validation, not a known-good path.
 
 ## Not yet wired up
 
-Remote HPC execution has no specific cluster configured — `remote.py`/`dft-submit-remote` are generic scaffolding, deliberately not tied to any particular cluster's hostname/scheduler/module system. GPU QE was mid-build as of this writing (see `docs/gpu-build.md`); no `pw-*-gpu@localhost` code is registered yet.
+Remote HPC execution has no specific cluster configured — `remote.py`/`dft-submit-remote` are generic scaffolding, deliberately not tied to any particular cluster's hostname/scheduler/module system. GPU QE covers only `pw.x` on one GPU architecture so far (see `docs/gpu-build.md`); the rest of the GPU-enabled suite (`ph.x`, etc.) was not built, so phonon workflows still route to CPU regardless of `allow_gpu`.

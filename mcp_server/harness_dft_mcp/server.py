@@ -229,6 +229,7 @@ def create_server(settings=None, host="127.0.0.1", port=8000):
         builder, plan = build_relax_inputs(
             atoms, code_label, pseudo_family_label=pseudo_family_label, protocol=protocol,
             kpoints_mesh=kpoints_mesh, ecutwfc_ry=ecutwfc_ry, allow_remote=allow_remote,
+            allow_gpu=allow_gpu, cpu_batch_size=cpu_batch_size, local_atom_ceiling=local_atom_ceiling,
         )
         pk = submit_builder(builder, label="harness-dft relax (MCP)")
         return {"pk": pk, "plan": _plan_dict(plan)}
@@ -262,6 +263,7 @@ def create_server(settings=None, host="127.0.0.1", port=8000):
         builder, plan = build_scf_inputs(
             atoms, code_label, pseudo_family_label=pseudo_family_label, protocol=protocol,
             kpoints_mesh=kpoints_mesh, ecutwfc_ry=ecutwfc_ry, allow_remote=allow_remote,
+            allow_gpu=allow_gpu, cpu_batch_size=cpu_batch_size, local_atom_ceiling=local_atom_ceiling,
         )
         pk = submit_builder(builder, label="harness-dft scf (MCP)")
         return {"pk": pk, "plan": _plan_dict(plan), "cell_volume_ang3": atoms.get_volume()}

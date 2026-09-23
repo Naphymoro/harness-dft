@@ -64,6 +64,37 @@ def test_status_reports_local_hardware_and_pseudo_families(mcp):
     assert isinstance(status["daemon_running"], bool)
 
 
+def test_submit_scf_forwards_allow_gpu_and_cpu_batch_size_to_the_plan(mcp, monkeypatch):
+    """Regression test: hd_submit_scf/hd_submit_relax used to accept allow_gpu/
+    cpu_batch_size/local_atom_ceiling as tool parameters but never pass them to
+    build_scf_inputs/build_relax_inputs -- only allow_remote was forwarded, so
+    the returned plan silently ignored the caller's GPU/batch-size choice
+    (caught by an actual GPU submission returning target="local" with
+    allow_gpu=True instead of "local-gpu"). This doesn't submit for real: it
+    patches submit_builder to capture the plan without touching the daemon."""
+    captured = {}
+
+    def fake_submit(builder, label=None):
+        captured["called"] = True
+        return -1  # sentinel pk, never a real node
+
+    # server.py does `from harness_dft.jobs import submit_builder` *inside* the
+    # tool function, so patching the attribute on harness_dft.jobs (looked up
+    # at call time) intercepts it without touching the real daemon.
+    import harness_dft.jobs as jobs_module
+    monkeypatch.setattr(jobs_module, "submit_builder", fake_submit)
+
+    result = _call(mcp, "hd_submit_scf", {
+        "structure_text": SI_CIF, "structure_format": "cif", "code_label": "pw-7.5@localhost",
+        "kpoints_mesh": [2, 2, 2], "ecutwfc_ry": 30.0,
+        "allow_gpu": True, "cpu_batch_size": 4, "local_atom_ceiling": 40,
+    })
+    assert captured.get("called"), "submit_builder was never reached"
+    # With allow_gpu=True and a real GPU present, the plan must reflect it --
+    # not silently fall back to a CPU plan because the flag was dropped.
+    assert result["plan"]["cpu_batch_size"] == 4
+
+
 def test_estimate_quantizes_mpiprocs_to_a_batch_and_does_not_submit(mcp):
     before = _call(mcp, "hd_status", {})
     estimate = _call(mcp, "hd_estimate", {"structure_text": SI_CIF, "structure_format": "cif"})

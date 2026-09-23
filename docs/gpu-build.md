@@ -61,16 +61,63 @@ is the only one that needs neither root nor a container runtime change, which is
    `output_parameters.convergence_info.scf_conv.convergence_achieved` matches the CPU result on the same
    structure within normal numerical tolerance.
 
-## Status
+## Two real problems hit during the build, and their fixes
 
-As of this writing: the HPC SDK tarball download was in progress (step 1, ~12.6 GB, background). QE 7.5 source
-(step 4) is already downloaded and extracted to `~/.local/share/cyranoid/gpu-build/q-e-qe-7.5/`, and the exact
-CMake invocation for step 5 has been confirmed by reading QE's own `CMakeLists.txt`/`NVFortranCompiler.cmake`
-(above) rather than guessed. Steps 2, 3, 5, 6, 7 had not been attempted yet. **No GPU-built QE code exists or is
-registered in AiiDA at this point** — `allow_gpu=True` on any `harness_dft`/MCP tool call will fall back to CPU
-routing regardless, since `choose_resources` only recommends a target; nothing enforces that a matching code
-actually exists until submission, and there is no `pw-*-gpu@*` code to submit to yet.
+Both confirmed by reading the actual error and tracing it, not guessed:
 
-**Update this file** (status, exact CMake invocation that worked, any errors hit and their fixes) once the build
-is actually attempted — this is the newest, least-travelled part of the whole harness and the most likely place
-for the plan above to need correction against what QE 7.5's CMake build actually accepts from NVHPC 25.7.
+1. **`MPI_Init` aborts with "opal_init:startup:internal-failure"` / help files not found at
+   `/proj/nv/libraries/...`.** The bundled HPC-X OpenMPI (`comm_libs/mpi` symlinks to `comm_libs/12.9/hpcx/hpcx-2.22.1`)
+   has NVIDIA's internal build-machine path baked in for locating its own runtime data, and doesn't auto-relocate.
+   Fix: set `OPAL_PREFIX` to the real local path before running anything MPI-linked against this SDK:
+   ```bash
+   export OPAL_PREFIX="$NVHPC/comm_libs/12.9/hpcx/hpcx-2.22.1/ompi"
+   ```
+   This must also go in the AiiDA code's `prepend_text` (see step 6 below), or every submitted job fails the
+   same way.
+2. **`pw.x` aborts immediately with `libgomp: TODO`.** QE enables `QE_ENABLE_OPENMP` by default whenever
+   `QE_ENABLE_CUDA` is on, and its CMake `find_package(FFTW3)` picked up Ubuntu's system FFTW3 including
+   `libfftw3_omp.so.3` (built against GNU's `libgomp`). The resulting `pw.x` links **both** `libgomp.so.1` (via
+   FFTW3) and NVHPC's own `libnvomp.so` (from nvfortran-compiled code) — two independent OpenMP runtimes in one
+   process, which crashes on the first parallel region. Fix: disable QE's own OpenMP layer, which only affects
+   host-side threading (GPU offload via CUDA Fortran/OpenACC is untouched):
+   ```bash
+   cmake ... -DQE_ENABLE_OPENMP=OFF ...
+   ```
+   After this, `ldd bin/pw.x` shows only `libfftw3.so.3` (no `_omp` variant) and `libnvomp.so` — one OpenMP
+   runtime, no crash.
+
+## Status: done and validated
+
+The build succeeded and is registered as `pw-7.5-gpu@localhost` (`core.code.installed`, pk 550, pointing at
+`~/.local/share/cyranoid/gpu-build/q-e-qe-7.5/build-gpu2/bin/pw.x`, `prepend_text` setting `PATH` for
+`nvfortran`/HPC-X `mpirun` and `OPAL_PREFIX` per the fix above). Validated three ways:
+
+- QE's own routine-timing breakdown for a real SCF run shows explicit `GPU` wall-clock entries for
+  `cdiaghg`/`vloc_psi`/`fft`/`ffts`/`fftw` — confirms kernels actually executed on the device, not just that CUDA
+  libraries are linked.
+- Ran the identical bulk-Si structure (8-atom conventional cell, `ecutwfc_ry=30`, `kpoints_mesh=[2,2,2]`,
+  `SSSP/1.3/PBE/efficiency`) through both `pw-7.5@localhost` (CPU) and `pw-7.5-gpu@localhost` (GPU) via
+  `hd_submit_scf`. Energies: CPU `-1242.1392117417 eV`, GPU `-1242.1392117388 eV` — agree to 9 significant
+  figures. Both reported `convergence_info.scf_conv.convergence_achieved: true`.
+- Went through the harness's own automatic routing, not a manual override: `hd_estimate`/`hd_submit_scf` with
+  `allow_gpu=True` on this 8-atom structure correctly picked `target="local-gpu"`, `mpiprocs=1` (one MPI rank per
+  the single GPU) with no cluster/GPU details hand-specified.
+
+**A real bug was caught by this validation and fixed**: `hd_submit_relax`/`hd_submit_scf` in
+`mcp_server/harness_dft_mcp/server.py` declared `allow_gpu`/`cpu_batch_size`/`local_atom_ceiling` as tool
+parameters but only forwarded `allow_remote` to the builder functions — the GPU/batch-size choice was silently
+dropped. First attempt at the comparison above submitted with `code_label="pw-7.5-gpu@localhost"` but got back
+`target="local"`, `mpiprocs=8` (8 CPU-side ranks all sharing the one GPU context) instead of the expected
+`local-gpu`/`mpiprocs=1`. It still finished and gave a numerically correct energy (GPUs tolerate multiple
+processes attaching, just inefficiently), but the resource plan was wrong. Fixed by forwarding all three
+parameters; a regression test (`test_submit_scf_forwards_allow_gpu_and_cpu_batch_size_to_the_plan`) now checks
+non-`allow_remote` kwargs actually reach the plan.
+
+**Known remaining gaps:**
+- Only `pw.x` was built. The rest of the GPU-enabled suite (`ph.x`, etc.) was not attempted — phonon workflows
+  still route to the CPU codes regardless of `allow_gpu`.
+- Validated on exactly one structure (bulk Si, 8 atoms) and one machine (1x RTX 2000 Ada, 16GB VRAM). Larger
+  systems, multi-GPU, or a different GPU architecture are untested — `QE_GPU_ARCHS=sm_89` was compiled for this
+  specific card's compute capability (8.9) and would need rebuilding for a different one.
+- The performance benefit was not measured (the test structure is tiny -- both runs finished in under a second).
+  This build proves *correctness*, not speedup; benchmark before relying on it for throughput.
