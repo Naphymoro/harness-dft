@@ -10,6 +10,21 @@ from __future__ import annotations
 from harness_dft.builders import apply_resource_plan, get_electronic_type
 
 
+# A real QE 7.5 bug lives here for small cells: ph.x can crash with a
+# libgfortran I/O error while printing symmetry operations that have a
+# nonzero fractional translation (non-symmorphic operations) -- common for
+# ibrav=0 cells, which is what AiiDA always builds. Root cause: a missing
+# comma in a WRITE format string in PHonon/PH/phq_summary.f90 (confirmed via
+# a debug rebuild + gdb backtrace pointing at the exact line, and a
+# one-line source patch that fixes it outright -- NOT a ScaLAPACK or
+# rank-count issue; an earlier "-northo 0 fixes it" diagnosis in this
+# codebase's history was a false positive from an insufficiently faithful
+# manual reproduction, and has been removed). See docs/2d-screening.md and
+# docs/upstream-bugs/qe-phq-summary-missing-comma.patch for the full
+# diagnosis and the patch. This module does not work around it -- the fix
+# is in the QE binary you register as `ph_code_label`, not in harness code.
+
+
 def build_ph_inputs(
     parent_scf_node,
     ph_code_label,

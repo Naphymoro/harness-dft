@@ -84,12 +84,14 @@ Relaxes bulk Si and prints the equilibrium lattice parameter — should land clo
 
 A pilot study (Al/Ga/In/Tl honeycomb candidates, P/As/Sb/Bi puckered/phosphorene-family candidates) for "which 2D
 monolayer prototype, if any, is stable for element X." All 8 elements relaxed successfully (`cell_dofree="2Dxy"`
-kept every structure's vacuum intact to 7 significant figures). Full phonon-stability chains completed for only
-1 of 8 (As -- found genuinely **dynamically unstable**, a real result); the other 7 are blocked by two distinct,
-root-caused external bugs, not harness logic: a QE 7.5 `ph.x` crash on high-symmetry `ibrav=0` cells (4 elements),
-and an `aiida-quantumespresso` restart-handler bug that drops the `INPUTPH` namelist (2 elements; the other, Sb,
-needed a `force_metal` override for a real SCF convergence issue that pilot also caught and fixed). See
-`docs/2d-screening.md` for the complete results table and full bug writeups.
+kept every structure's vacuum intact to 7 significant figures). Along the way, found, root-caused, and **fixed**
+(not just diagnosed) a real QE 7.5 bug: `ph.x` crashed on `ibrav=0` cells with non-symmorphic symmetry operations
+(a missing comma in a FORMAT string in `PHonon/PH/phq_summary.f90`) -- patched, rebuilt, and verified against the
+exact previously-crashing case (see `docs/upstream-bugs/`). Full phonon-stability chains completed for 2 of 8
+(As and Ga -- both found genuinely **dynamically unstable**, real results); the other 5 are now blocked by a
+separate, still-open `aiida-quantumespresso` restart-handler bug that drops the `INPUTPH` namelist, not the QE
+bug above and not harness logic (Sb also needed a `force_metal` override for a real SCF convergence issue that
+this pilot caught and fixed). See `docs/2d-screening.md` for the complete results table and full bug writeups.
 
 ## Claude Code Skills
 
@@ -117,7 +119,7 @@ tried.
 
 ## What's verified vs. not
 
-Live-tested against a real `pw.x` 7.5 run: `relax.py`, `converge.py` (both ecutwfc and k-point sweeps, via shared `eos.py` SCF builder). Also live-tested: `jobs.py`'s submit/poll/results round trip (including its recursive handling of namespaced outputs, e.g. PdosWorkChain's `dos.*`/`projwfc.*`) and the `harness-dft-mcp` server's read-only tools + `hd_submit_scf`/`hd_submit_ph`/`hd_submit_q2r`/`hd_submit_matdyn`/`hd_submit_pdos` on both CPU and GPU codes, against this machine's real AiiDA profile (see `mcp_server/README.md`'s "Verified vs. not" for the exact list). Also live-tested: `hd_generate_2d_prototype` + `hd_submit_relax(cell_dofree="2Dxy")` on all 8 pilot 2D candidates (all `exit_status=0`, vacuum intact in every case) -- caught and fixed real bugs in the process: an `npool`-divisibility bug in `estimate.py`, and a missing `force_metal` override in `get_electronic_type` (see `docs/2d-screening.md`). The phonon chain / `hd_check_phonon_stability` completed for 1 of those 8 (As, correctly found dynamically unstable); the other 7 are blocked by two external bugs (QE 7.5's `ph.x`, and `aiida-quantumespresso`'s `PhBaseWorkChain` restart handler), both root-caused and documented, not harness bugs. Structurally verified against installed `aiida-quantumespresso` 4.17.0 source but **not run live**: `eos.py`'s multi-point volume scan, `neb.py`, `remote.py` (no real SSH target), `hd_submit_relax`/`hd_submit_bands` specifically on a GPU code (the CPU path and the analogous `hd_submit_scf`/`hd_submit_ph` GPU paths are both live-tested, but these two combinations weren't separately re-run). Treat first real use of the untested combinations as validation, not a known-good path.
+Live-tested against a real `pw.x` 7.5 run: `relax.py`, `converge.py` (both ecutwfc and k-point sweeps, via shared `eos.py` SCF builder). Also live-tested: `jobs.py`'s submit/poll/results round trip (including its recursive handling of namespaced outputs, e.g. PdosWorkChain's `dos.*`/`projwfc.*`) and the `harness-dft-mcp` server's read-only tools + `hd_submit_scf`/`hd_submit_ph`/`hd_submit_q2r`/`hd_submit_matdyn`/`hd_submit_pdos` on both CPU and GPU codes, against this machine's real AiiDA profile (see `mcp_server/README.md`'s "Verified vs. not" for the exact list). Also live-tested: `hd_generate_2d_prototype` + `hd_submit_relax(cell_dofree="2Dxy")` on all 8 pilot 2D candidates (all `exit_status=0`, vacuum intact in every case) -- caught and fixed real bugs in the process: an `npool`-divisibility bug in `estimate.py`, and a missing `force_metal` override in `get_electronic_type` (see `docs/2d-screening.md`). The phonon chain / `hd_check_phonon_stability` completed for 2 of those 8 (As and Ga, both correctly found dynamically unstable) after finding, root-causing, and fixing a real QE 7.5 `ph.x` crash (see `docs/upstream-bugs/`); the other 5 are blocked by a separate, still-open `aiida-quantumespresso` `PhBaseWorkChain` restart-handler bug, root-caused and documented, not a harness bug. Structurally verified against installed `aiida-quantumespresso` 4.17.0 source but **not run live**: `eos.py`'s multi-point volume scan, `neb.py`, `remote.py` (no real SSH target), `hd_submit_relax`/`hd_submit_bands` specifically on a GPU code (the CPU path and the analogous `hd_submit_scf`/`hd_submit_ph` GPU paths are both live-tested, but these two combinations weren't separately re-run). Treat first real use of the untested combinations as validation, not a known-good path.
 
 ## Not yet wired up
 

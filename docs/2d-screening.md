@@ -92,53 +92,89 @@ vacuum spacing intact to within `3e-7 Å` of the seed in every case:
 | Sb | puckered | 1387 | 4.085 × 6.421 × 18.973 | -2516.23 | yes -- **genuine SCF non-convergence without it** (5 restart attempts, progressively smaller mixing, still failed; converged immediately once `force_metal=True`) |
 | Bi | puckered | 1456 | 4.213 × 6.670 × 19.036 | -2520.59 | yes (needed both `force_metal=True` and a manually-extended walltime, 5400s, to avoid a restart-handler bug -- see below) |
 
-**Phonon stability** (`(2,2,1)` q-mesh) was attempted for all 8. Result: **1 of 8 completed**.
+**Phonon stability** (`(2,2,1)` q-mesh) was attempted for all 8. Result: **2 of 8 completed** (updated after the
+QE bug below was actually fixed, not just diagnosed).
 
 - **As: dynamically UNSTABLE.** `min_frequency_thz=-6.22` at Gamma and `-1.49` at `q=(0.5,0,0)` -- real, well
   beyond the `-0.5 THz` numerical-noise tolerance, and spanning more than one q-point. This puckered arsenene
-  candidate, at this level of theory (PBE, `ecutwfc=40 Ry`, this seed geometry), is not a stable phase. This is
-  itself a real, meaningful screening result -- not every candidate should be stable, and the pipeline correctly
-  identified one that isn't.
-- **Ga, Tl, In, Bi: blocked by a real QE 7.5 crash**, not a harness bug. `ph.x` crashes within seconds at exactly
-  the point where it prints/processes point-group symmetry operations for `q=(0,0,0)` -- a Fortran runtime I/O
-  crash (`libgfortran/io/transfer.c: data_transfer_init`), multiple MPI ranks failing independently. Confirmed
-  **not** caused by: MPI rank count (reproduced identically at `mpiprocs=8` and `mpiprocs=2`), k-point pool count
-  (ph.x doesn't even receive an `-npool` flag in this workflow), or symmetry use itself (`nosym=true` in the
-  `INPUTPH` namelist did not avoid it). Correlates with the number of symmetry operations at the crash point (Ga:
-  13 sym ops, Bi: 9), not with honeycomb-vs-puckered topology (Bi is puckered and still crashes; As is puckered
-  and doesn't). AiiDA always builds QE's `CELL_PARAMETERS`/`ibrav=0` (a generic cell, never a symmetry-aware
-  `ibrav`) -- QE's own `pw.x` output for every one of these structures includes the warning `using ibrav=0 with
-  symmetry is DISCOURAGED, use correct ibrav instead`, which `pw.x` tolerates but `ph.x`'s stricter symmetry
-  machinery apparently does not, for high-enough symmetry counts. This needs either an upstream QE fix or setting
-  an explicit symmetry-matched `ibrav` for these structures (not attempted here -- real scope beyond this pilot).
-- **P, Sb: blocked by a real `aiida-quantumespresso` bug**, also not a harness bug. Both genuinely exceed even a
-  manually-extended 7200s (2 hour) walltime for a single `PhCalculation` at this q-mesh/cutoff on this hardware --
-  a real, if inconvenient, computational-cost finding (DFPT for these puckered pnictogens is expensive). When the
-  walltime handler fires and restarts, the restart hits `aiida_quantumespresso/calculations/ph.py:365`:
-  `parameters['INPUTPH'].get('electron_phonon', ...)` raises `KeyError: 'INPUTPH'` -- the restart path constructs
-  new calculation inputs that have silently dropped the `INPUTPH` namelist entirely. Reproduced identically at
-  both the original ~34-minute default walltime and the manually-extended 2-hour one. This is a genuine upstream
-  library bug (confirmed via full traceback, not inferred) that fires on *any* automatic restart of a
-  `PhCalculation`, regardless of walltime budget -- avoiding it requires either a coarser/cheaper phonon
-  calculation that finishes in one shot, or a fix/patch to `aiida-quantumespresso` itself, neither attempted here.
+  candidate, at this level of theory (PBE, `ecutwfc=40 Ry`, this seed geometry), is not a stable phase.
+- **Ga: dynamically UNSTABLE.** `min_frequency_thz=-1.06 THz`, identically at **three** q-points
+  (`(0,0.5,0)`, `(0.5,0,0)`, `(0.5,0.5,0)`) -- also real, not noise. This buckled-honeycomb gallenene candidate is
+  not a stable phase either, at this level of theory.
 
-**Two more real bugs this pilot caught in the harness itself, both fixed** (see "Real bugs found" above for the
-first: `npool`): the electronic-type heuristic had no override hook (`force_metal` added, directly unblocking
-Sb's real convergence failure); nothing else new during the full-pilot run beyond what's documented above.
+Both are real, meaningful screening results -- not every candidate should be stable, and the pipeline correctly
+identified two that aren't.
+
+### A real QE 7.5 bug, found, root-caused, and fixed (not just diagnosed)
+
+`ph.x` was crashing within seconds on Ga, Tl, In, and Bi's phonon step -- a `libgfortran` I/O crash
+(`data_transfer_init`), multiple MPI ranks failing independently, at exactly the point where it prints
+point-group symmetry operations for `q=(0,0,0)`. **Root cause, confirmed via a debug rebuild + a real,
+human-readable compiler error, not guessed**: a missing comma in a `WRITE` FORMAT string in
+`PHonon/PH/phq_summary.f90` (line 189), in the block that only executes for a symmetry operation with a nonzero
+fractional translation (a non-symmorphic operation). Every sibling `WRITE` in the same subroutine has the comma;
+this one line doesn't. This is why it correlates with `ibrav=0` (what AiiDA always builds): non-symmorphic
+operations are far more likely to appear without a recognized Bravais lattice to pick a symmetric origin --
+exactly what `pw.x`'s own "using `ibrav=0` with symmetry is DISCOURAGED" warning is about, even though `pw.x`
+itself never reaches this buggy phonon-only code path.
+
+**A wrong turn on the way there, corrected**: an early manual reproduction suggested `-northo 0` (disabling
+ScaLAPACK) avoided the crash, and the harness briefly shipped a `disable_scalapack` auto-workaround based on that.
+Retested against the *exact* real failing input (not a hand-typed approximation), `-northo 0` did **not** avoid
+the crash -- that first reproduction just happened to use slightly different SCF parameters that never generated
+a non-symmorphic operation. The workaround has been **removed from the harness** (it didn't fix anything, and
+shipping it would have been dishonest); the actual fix is the one-line source patch, confirmed by a full rebuild
+that took the exact previously-crashing case to `JOB DONE` with correct, physically sane frequencies.
+
+Full patch, bug writeup, and reproduction: `docs/upstream-bugs/qe-phq-summary-missing-comma.patch` and
+`docs/upstream-bugs/README.md`. Rebuilt locally (MPI + HDF5, matching this profile's production QE install) and
+registered as `ph-7.5-fixed@localhost`. **Not yet submitted to the real QE project** -- the patch is ready, but
+filing it on [QEF/q-e](https://gitlab.com/QEF/q-e) under someone's identity needs their explicit go-ahead, not
+something to do unilaterally.
+
+With the crash fixed, Ga/Tl/In/Bi's phonon steps run to real DFPT convergence -- but three of the four (Tl, In,
+Bi) then hit a **second, separate, pre-existing bug**:
+
+- **Tl, In, Bi: blocked by the `aiida-quantumespresso` restart-handler bug**, not the QE bug above and not a
+  harness bug. Once `ph.x` no longer crashes instantly, these take longer than the default ~32-minute walltime
+  estimate to actually converge; when the walltime handler fires and restarts, the restart hits
+  `aiida_quantumespresso/calculations/ph.py:365`: `parameters['INPUTPH'].get('electron_phonon', ...)` raises
+  `KeyError: 'INPUTPH'` -- the restart path constructs new calculation inputs that have silently dropped the
+  `INPUTPH` namelist entirely. Same bug already found for P/Sb below.
+- **P, Sb: blocked by the same `aiida-quantumespresso` bug.** Both genuinely exceed even a manually-extended
+  7200s (2 hour) walltime for a single `PhCalculation` at this q-mesh/cutoff on this hardware -- a real, if
+  inconvenient, computational-cost finding (DFPT for these puckered pnictogens is expensive) -- and then hit the
+  identical restart-handler bug. Reproduced identically at both the original ~34-minute default walltime and the
+  manually-extended 2-hour one, confirming it fires on *any* automatic restart of a `PhCalculation`, regardless
+  of walltime budget. This is a genuine upstream library bug (confirmed via full traceback, not inferred);
+  avoiding it requires either a coarser/cheaper phonon calculation that finishes in one attempt, or a fix/patch
+  to `aiida-quantumespresso` itself, neither attempted here. Ga's own official run succeeded only because it was
+  resubmitted standalone (no CPU contention from concurrent jobs) with a manually-extended walltime -- proving
+  the same approach would likely work for Tl/In/Bi too, at the cost of more wall-clock time than this pilot spent
+  chasing it further.
+
+**Real bugs this pilot caught in the harness itself, all fixed**: the `npool`-divisibility bug (see above); the
+electronic-type heuristic's missing override hook (`force_metal`, directly unblocking Sb's real SCF convergence
+failure); and the `disable_scalapack` non-fix described above, added then correctly removed once shown not to
+work.
 
 ## What's proven vs. what's left
 
 **Proven**: structure generation (all 8 elements, numerically verified geometry), `cell_dofree="2Dxy"` vacuum
 preservation (all 8, to 7 significant figures), the resource estimator including the `npool` fix, the
-`force_metal` override (directly fixed Sb's real convergence failure), and one complete
-generate→relax→phonon→stability verdict (As: correctly identified as unstable).
+`force_metal` override (directly fixed Sb's real convergence failure), **the QE 7.5 `ph.x` symmetry crash found,
+root-caused to an exact source line, patched, rebuilt, and verified fixed** (not just diagnosed), and two complete
+generate→relax→phonon→stability verdicts (As and Ga: both correctly identified as unstable).
 
-**Not resolved, and out of scope for further iteration in this pilot**: the QE 7.5 `ph.x` symmetry-count crash
-(4 elements blocked), and the `aiida-quantumespresso` restart-handler `INPUTPH` bug (2 elements blocked). Both
-are real, root-caused, reproducible external bugs, not harness logic errors -- fixing either is a genuine
-follow-up project (upstream QE investigation / an `ibrav` fix for the former; an `aiida-quantumespresso` patch or
-workaround for the latter), not something to paper over with more resource-parameter tuning.
+**Not resolved, and out of scope for further iteration in this pilot**: the `aiida-quantumespresso`
+`PhBaseWorkChain` restart-handler `INPUTPH` bug (blocks Tl, In, Bi, P, Sb -- 5 of 8, once the QE crash above
+stopped being the thing blocking them first). This is a real, root-caused, reproducible bug in a different
+project's codebase, not a harness logic error and not the bug this session was asked to fix -- a genuine
+follow-up (an `aiida-quantumespresso` patch, or restructuring these calculations to reliably finish inside one
+walltime budget) rather than something to paper over with more resource-parameter tuning. The QE patch itself
+is written and verified but **not yet submitted upstream** (see `docs/upstream-bugs/README.md`) -- filing it on
+the real QE project needs the user's go-ahead, not something done unilaterally.
 
 `hd_rank_prototypes` was only exercised as a mechanical sort-order check (two arbitrary bulk-Si SCF nodes), never
-on a real "which prototype wins" comparison -- with only As having a complete stability verdict among the 8, and
-no element having *two* prototypes both taken to completion, there is nothing to rank yet in this pilot.
+on a real "which prototype wins" comparison -- with only As and Ga having complete stability verdicts among the
+8, and no element having *two* prototypes both taken to completion, there is nothing to rank yet in this pilot.
