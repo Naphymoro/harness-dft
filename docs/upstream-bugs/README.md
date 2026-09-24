@@ -35,10 +35,11 @@ parameter based on this wrong diagnosis; it has been removed. The comma fix abov
 cause and fix -- verified against the real case, not a simplified one.
 
 **Status**: fixed and rebuilt locally (`~/.local/share/cyranoid/gpu-build/q-e-qe-7.5/build-fixed/`, registered in
-this profile as `ph-7.5-fixed@localhost`). **Not yet submitted upstream** to
-[QEF/q-e](https://gitlab.com/QEF/q-e) -- the patch above is ready to submit as a merge request or issue, but
-doing so was left to the project maintainer/user rather than done unilaterally on their behalf (submitting to a
-third-party project's issue tracker/MR queue under someone's identity needs their explicit go-ahead).
+this profile as `ph-7.5-fixed@localhost`). A ready-to-paste GitLab issue is drafted at
+`gitlab-issue-draft.md` (title + full body, patch included) for
+[QEF/q-e](https://gitlab.com/QEF/q-e) -- **not yet submitted**, since posting to a third-party project's issue
+tracker under someone's identity is their action to take, not something done unilaterally on their behalf. Update
+this line once it's actually filed (link the real issue here).
 
 ## `aiida-quantumespresso`'s `PhBaseWorkChain` restart handler drops `INPUTPH`
 
