@@ -17,12 +17,17 @@ run locally or on remote HPC before planning anything**.
 | NEB gets its own in-memory job table, not AiiDA pks | `workflows/neb.py` is deliberately ASE-native with no AiiDA provenance (see the harness's own module docstring). `hd_submit_neb`/`hd_get_neb_job` track it in this process's memory instead; lost on server restart. |
 | Remote/GPU setup tools are idempotent, never guess cluster/GPU specifics | `hd_setup_remote_computer`/`hd_register_remote_code` require the researcher's own hostname/username/scheduler/module details, matching `harness_dft.remote`'s cluster-agnostic design. |
 
-## Tools (18)
+## Tools (21)
 
-Read: `hd_status`, `hd_list_pseudo_families`, `hd_estimate`, `hd_validate_pseudo_coverage`, `hd_get_job`,
-`hd_wait_for_job`, `hd_get_job_results`, `hd_get_neb_job`.
+Read: `hd_status`, `hd_list_pseudo_families`, `hd_estimate`, `hd_validate_pseudo_coverage`,
+`hd_generate_2d_prototype`, `hd_check_phonon_stability`, `hd_rank_prototypes`, `hd_get_job`, `hd_wait_for_job`,
+`hd_get_job_results`, `hd_get_neb_job`.
 Write: `hd_submit_relax`, `hd_submit_scf`, `hd_submit_bands`, `hd_submit_pdos`, `hd_submit_ph`, `hd_submit_q2r`,
 `hd_submit_matdyn`, `hd_submit_neb`, `hd_setup_remote_computer`, `hd_register_remote_code`.
+
+`hd_generate_2d_prototype`/`hd_check_phonon_stability`/`hd_rank_prototypes` support elemental 2D-monolayer
+screening (see `docs/2d-screening.md`) -- `hd_submit_relax` also gained a `cell_dofree` parameter for this
+(`"2Dxy"` keeps a slab's vacuum spacing intact during vc-relax).
 
 Full argument/return reference: `deer-flow/skills/public/dft-harness/references/tool-reference.md`.
 
@@ -100,21 +105,31 @@ Live-verified against this machine's real AiiDA profile and QE 7.5, on both CPU 
   `exit_status=0`/`is_finished_ok=True`, `matdyn`'s output includes `output_phonon_bands`.
 - `hd_submit_pdos`, GPU codes (`pw`+`dos`+`projwfc`): finishes successfully, results correctly include the
   namespaced `dos.output_dos`/`projwfc.Dos`/`projwfc.Pdos`/`projwfc.projections` outputs.
+- `hd_generate_2d_prototype` → `hd_estimate` → `hd_submit_relax(cell_dofree="2Dxy")` on a real 2D candidate
+  (aluminene, CPU code): `exit_status=0`; vacuum spacing survived vc-relax intact (c-axis unchanged to 8
+  significant figures) while the in-plane bond length and buckling genuinely relaxed. See `docs/2d-screening.md`.
 
-This exercise caught **two real bugs**, both fixed with regression tests: (1) `hd_submit_relax`/`hd_submit_scf`/
+This exercise caught **three real bugs**, all fixed with regression tests: (1) `hd_submit_relax`/`hd_submit_scf`/
 `hd_submit_ph`/`hd_submit_bands`/`hd_submit_pdos` variously either dropped `allow_gpu`/`cpu_batch_size`/
 `local_atom_ceiling` on the way to their builder functions, or (for `hd_submit_ph`/`hd_submit_bands`/
 `hd_submit_pdos`) didn't declare those parameters at all — caught by a real GPU submission coming back with a
 CPU-style 8-rank plan instead of the correct 1-rank-per-GPU one; (2) `hd_get_job_results`/`harness_dft.jobs.
 get_results` silently dropped every namespaced output (`PdosWorkChain`'s `dos.*`/`projwfc.*`), so a successfully
 finished PDOS job returned an empty dict with no error — fixed by recursing into nested output namespaces instead
-of skipping them.
+of skipping them; (3) `choose_resources`' `npool` picked the largest divisor of **n_kpoints** capped at
+`mpiprocs`, when QE's `-npool` actually requires a divisor **of mpiprocs** — every prior test's k-point mesh
+total happened to share a large common factor with the 8-rank batch size, until a real `(9,9,1)`-mesh 2D candidate
+(81 kpoints, factors only 3^4) computed `npool=3` against `mpiprocs=8` and `pw.x` aborted immediately
+(`mp_start_pools`: `parent_nproc /= nproc_pool * npool`). Fixed, with a regression test reproducing the exact
+failure.
 
 **Not live-verified**: `hd_submit_relax`/`hd_submit_bands` specifically on a GPU code (the parameter-forwarding
 fix is identical to the live-tested `hd_submit_scf`/`hd_submit_ph` paths and covered by a regression test, but
 these two combinations weren't separately re-run end-to-end), `hd_submit_neb` (never run live at all),
-`hd_setup_remote_computer`/`hd_register_remote_code` (no real SSH target). Treat first real use of each as
-validation.
+`hd_setup_remote_computer`/`hd_register_remote_code` (no real SSH target), the puckered 2D prototype through a
+real relax (only geometry-checked, not DFT-relaxed), `hd_check_phonon_stability` on any 2D candidate (only
+exercised against bulk Si), and `hd_rank_prototypes` on a real "which prototype wins" comparison (only mechanically
+tested against two arbitrary bulk-Si SCF nodes). Treat first real use of each as validation.
 
 ## Tests
 

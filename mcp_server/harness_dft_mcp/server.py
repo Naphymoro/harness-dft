@@ -177,6 +177,49 @@ def create_server(settings=None, host="127.0.0.1", port=8000):
             missing = str(exc).rsplit(": ", 1)[-1].split(", ")
             return {"covered": False, "missing": missing, "message": str(exc)}
 
+    # ---- 2D monolayer prototype generation (no submission) -------------------
+
+    @mcp.tool(annotations=READ)
+    def hd_generate_2d_prototype(
+        element: Annotated[str, Field(description='Element symbol, e.g. "Al", "P".')],
+        prototype: Literal["honeycomb", "puckered"],
+        vacuum: Annotated[float, Field(gt=0, le=40)] = 18.0,
+        buckle_seed: Annotated[float, Field(ge=0, le=1)] = 0.08,
+        pucker_amplitude_fraction: Annotated[float, Field(ge=0, le=1)] = 0.35,
+    ) -> dict:
+        """Generate a 2D monolayer STARTING GUESS for a given element: "honeycomb"
+        (graphene/silicene/borophene/arsenene-alpha family -- 2 atoms, seeded
+        with a small buckling so relaxation isn't stuck at a planar saddle
+        point) or "puckered" (black-phosphorus/phosphorene topology -- 4 atoms,
+        3-fold coordinated). Bond lengths come from ASE's tabulated covalent
+        radii, NOT literature lattice constants -- this is a topological seed
+        only. ALWAYS relax it afterward with hd_submit_relax using
+        cell_dofree="2Dxy" (never a plain 3D relax -- it will collapse the
+        vacuum), and use a (Nx, Ny, 1) k-point mesh (see kpoints_mesh_suggestion
+        in the response), never (Nx, Ny, Nz>1)."""
+        from dataclasses import asdict as _asdict
+        from ase.io import write
+        import io
+
+        from harness_dft.twod import build_honeycomb_monolayer, build_puckered_monolayer, default_2d_kpoints_mesh
+
+        if prototype == "honeycomb":
+            atoms = build_honeycomb_monolayer(element, vacuum=vacuum, buckle_seed=buckle_seed)
+        else:
+            atoms = build_puckered_monolayer(element, vacuum=vacuum, pucker_amplitude_fraction=pucker_amplitude_fraction)
+
+        buffer = io.StringIO()
+        write(buffer, atoms, format="extxyz")
+        return {
+            "structure_text": buffer.getvalue(),
+            "structure_format": "extxyz",
+            "n_atoms": len(atoms),
+            "cell_lengths_angstrom": list(atoms.cell.lengths()),
+            "kpoints_mesh_suggestion": list(default_2d_kpoints_mesh((9, 9))),
+            "required_relax_settings": {"cell_dofree": "2Dxy"},
+            "note": "Unrelaxed topological seed. Bond lengths from covalent radii, not literature values.",
+        }
+
     # ---- job polling (generic across every submitted workflow) --------------
 
     @mcp.tool(annotations=READ)
@@ -201,6 +244,38 @@ def create_server(settings=None, host="127.0.0.1", port=8000):
         from harness_dft.jobs import get_results
         return get_results(pk)
 
+    @mcp.tool(annotations=READ)
+    def hd_check_phonon_stability(
+        matdyn_pk: Annotated[int, Field(description="pk of a FINISHED hd_submit_matdyn job.")],
+        tolerance_thz: Annotated[float, Field(le=0)] = -0.5,
+    ) -> dict:
+        """Check a finished phonon dispersion for imaginary (negative)
+        frequencies -- the standard dynamical-stability test. `tolerance_thz`
+        (default -0.5 THz) absorbs small numerical Gamma-point noise; a real
+        instability is normally much larger and/or spans more of the
+        Brillouin zone. NECESSARY, NOT SUFFICIENT for "this is a real
+        material" -- says nothing about formation energy vs. competing
+        prototypes (see hd_rank_prototypes) or finite-temperature stability."""
+        from dataclasses import asdict as _asdict
+        from harness_dft.stability import check_dynamical_stability
+        return _asdict(check_dynamical_stability(matdyn_pk, tolerance_thz=tolerance_thz))
+
+    @mcp.tool(annotations=READ)
+    def hd_rank_prototypes(
+        candidates: Annotated[list[dict], Field(description='[{"label": "buckled-honeycomb", "pk": 573}, ...] -- FINISHED relax/SCF jobs for the SAME element, held at the same ecutwfc/k-density/pseudo family.')],
+    ) -> dict:
+        """Rank finished candidate structures for the same element by energy
+        per atom -- the "which polymorph is the ground state" comparison.
+        Does not itself check dynamical stability (hd_check_phonon_stability)
+        or verify the candidates actually used consistent settings -- mixing
+        ecutwfc/pseudo family across candidates makes the comparison
+        meaningless, the same way mixing functionals does (dft-pseudo-select
+        skill)."""
+        from dataclasses import asdict as _asdict
+        from harness_dft.screening import rank_prototypes
+        result = rank_prototypes(candidates)
+        return {"ranked": [_asdict(r) for r in result.ranked], "ground_state_label": result.ground_state_label}
+
     # ---- submit: relax -------------------------------------------------------
 
     @mcp.tool(annotations=WRITE)
@@ -216,6 +291,7 @@ def create_server(settings=None, host="127.0.0.1", port=8000):
         allow_gpu: bool = False,
         cpu_batch_size: Annotated[int, Field(ge=1, le=256)] = 8,
         local_atom_ceiling: int = 40,
+        cell_dofree: Annotated[str | None, Field(description='QE CELL-namelist cell_dofree, e.g. "2Dxy" for a slab-with-vacuum structure (see hd_generate_2d_prototype) so vc-relax only relaxes in-plane. Leave unset for a normal 3D bulk relax.')] = None,
     ) -> dict:
         """Submit a structure relaxation (PwRelaxWorkChain). Returns immediately
         with a pk; poll with hd_wait_for_job. `code_label` must match the
@@ -230,6 +306,7 @@ def create_server(settings=None, host="127.0.0.1", port=8000):
             atoms, code_label, pseudo_family_label=pseudo_family_label, protocol=protocol,
             kpoints_mesh=kpoints_mesh, ecutwfc_ry=ecutwfc_ry, allow_remote=allow_remote,
             allow_gpu=allow_gpu, cpu_batch_size=cpu_batch_size, local_atom_ceiling=local_atom_ceiling,
+            cell_dofree=cell_dofree,
         )
         pk = submit_builder(builder, label="harness-dft relax (MCP)")
         return {"pk": pk, "plan": _plan_dict(plan)}

@@ -166,7 +166,18 @@ def choose_resources(
         else:
             reason = "exceeds local comfort threshold but no remote target configured; running local anyway"
 
-    npool = _largest_divisor_at_most(job.n_kpoints, mpiprocs) if job.n_kpoints > 1 else 1
+    # QE's `-npool N` requires nproc % N == 0 (each pool gets an equal share
+    # of the MPI ranks) -- npool must divide mpiprocs, NOT n_kpoints. Getting
+    # this backwards (a divisor of n_kpoints capped at mpiprocs) crashes QE
+    # with "invalid number of pools, parent_nproc /= nproc_pool * npool" the
+    # moment n_kpoints and mpiprocs don't happen to share a large common
+    # factor -- every prior test structure's mesh total (a power of two)
+    # happened to divide evenly into an 8-rank batch, masking this until a
+    # 9x9x1 mesh (81 kpoints, all-odd factors) hit it for real. Capping the
+    # search at n_kpoints (not mpiprocs) is just an efficiency choice --
+    # a pool with zero kpoints assigned is wasted, not incorrect -- so it's
+    # fine that the cap and the divisibility target are different numbers.
+    npool = _largest_divisor_at_most(mpiprocs, min(mpiprocs, job.n_kpoints)) if job.n_kpoints > 1 else 1
 
     # Coarse walltime starting point; AiiDA's out-of-walltime handler resubmits
     # with more time if this is too low, so err on the short side for local dev.

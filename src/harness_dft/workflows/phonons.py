@@ -67,10 +67,20 @@ def build_q2r_inputs(ph_node, q2r_code_label):
     return builder
 
 
-def build_matdyn_inputs(q2r_node, matdyn_code_label, kpoints):
+def build_matdyn_inputs(q2r_node, matdyn_code_label, kpoints, asr: str | None = "simple"):
     """Build a MatdynBaseWorkChain from a finished Q2rBaseWorkChain's force
     constants output. `kpoints` is an AiiDA KpointsData defining the
-    dispersion path or mesh to interpolate onto."""
+    dispersion path or mesh to interpolate onto.
+
+    `asr` applies QE's acoustic-sum-rule correction (default `"simple"`,
+    QE's basic/general-purpose option). Without it, small numerical
+    translational-invariance violations commonly show up as slightly
+    negative acoustic-branch frequencies right at Gamma (seen in practice:
+    about -0.4 THz on an otherwise well-converged bulk-Si test) that are
+    numerical noise, not real dynamical instability -- `asr` corrects for
+    this rather than leaving it to a stability check's tolerance to paper
+    over. Pass `None` to disable (matdyn.x's own default)."""
+    from aiida import orm
     from aiida.orm import load_code
     from aiida.plugins import WorkflowFactory
 
@@ -81,6 +91,8 @@ def build_matdyn_inputs(q2r_node, matdyn_code_label, kpoints):
     builder.matdyn.code = code
     builder.matdyn.force_constants = q2r_node.outputs.force_constants
     builder.matdyn.kpoints = kpoints
+    if asr:
+        builder.matdyn.parameters = orm.Dict(dict={"INPUT": {"asr": asr}})
     builder.matdyn.metadata.options.resources = {"num_machines": 1, "num_mpiprocs_per_machine": 1}
     builder.matdyn.metadata.options.max_wallclock_seconds = 600
     return builder

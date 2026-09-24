@@ -75,7 +75,18 @@ Relaxes bulk Si and prints the equilibrium lattice parameter — should land clo
 | `workflows/bands_dos.py` | `PwBandsWorkChain` + `PdosWorkChain` wrappers |
 | `workflows/phonons.py` | `PhBaseWorkChain` -> `Q2rBaseWorkChain` -> `MatdynBaseWorkChain` pipeline |
 | `workflows/neb.py` | ASE-native NEB with QE as the force engine (no AiiDA provenance) |
+| `twod.py` | 2D monolayer prototype generation (honeycomb, puckered/black-phosphorus-type) for elemental screening |
+| `stability.py` | Dynamical-stability check (imaginary phonon frequencies) from a finished phonon dispersion |
+| `screening.py` | Cross-prototype energy ranking -- "which candidate structure is the ground state for this element" |
 | `mcp_server/` | `harness-dft-mcp`: exposes the above to DeerFlow as MCP tools (`hd_*`) |
+
+## 2D monolayer screening
+
+A pilot study (group-13 elements + phosphorene's group-15 family) for the broader question "which 2D monolayer
+prototype, if any, is stable for element X" -- structure generation, `cell_dofree="2Dxy"`-constrained relaxation
+so a slab's vacuum survives vc-relax, and phonon-based dynamical-stability checking. See `docs/2d-screening.md`
+for the design, a real npool bug this caught and fixed, and validation results (aluminene's vacuum survived
+relaxation to 8 significant figures; real bond-length relaxation happened, not a no-op).
 
 ## Claude Code Skills
 
@@ -103,7 +114,7 @@ tried.
 
 ## What's verified vs. not
 
-Live-tested against a real `pw.x` 7.5 run: `relax.py`, `converge.py` (both ecutwfc and k-point sweeps, via shared `eos.py` SCF builder). Also live-tested: `jobs.py`'s submit/poll/results round trip (including its recursive handling of namespaced outputs, e.g. PdosWorkChain's `dos.*`/`projwfc.*`) and the `harness-dft-mcp` server's read-only tools + `hd_submit_scf`/`hd_submit_ph`/`hd_submit_q2r`/`hd_submit_matdyn`/`hd_submit_pdos` on both CPU and GPU codes, against this machine's real AiiDA profile (see `mcp_server/README.md`'s "Verified vs. not" for the exact list). Structurally verified against installed `aiida-quantumespresso` 4.17.0 source but **not run live**: `eos.py`'s multi-point volume scan, `neb.py`, `remote.py` (no real SSH target), and `hd_submit_relax`/`hd_submit_bands` specifically on a GPU code (the CPU path and the analogous `hd_submit_scf`/`hd_submit_ph` GPU paths are both live-tested, but these two combinations weren't separately re-run). Treat first real use of the untested combinations as validation, not a known-good path.
+Live-tested against a real `pw.x` 7.5 run: `relax.py`, `converge.py` (both ecutwfc and k-point sweeps, via shared `eos.py` SCF builder). Also live-tested: `jobs.py`'s submit/poll/results round trip (including its recursive handling of namespaced outputs, e.g. PdosWorkChain's `dos.*`/`projwfc.*`) and the `harness-dft-mcp` server's read-only tools + `hd_submit_scf`/`hd_submit_ph`/`hd_submit_q2r`/`hd_submit_matdyn`/`hd_submit_pdos` on both CPU and GPU codes, against this machine's real AiiDA profile (see `mcp_server/README.md`'s "Verified vs. not" for the exact list). Also live-tested: `hd_generate_2d_prototype` + `hd_submit_relax(cell_dofree="2Dxy")` on a real 2D candidate (aluminene) -- caught and fixed a real `npool`-divisibility bug in `estimate.py` in the process (see `docs/2d-screening.md`). Structurally verified against installed `aiida-quantumespresso` 4.17.0 source but **not run live**: `eos.py`'s multi-point volume scan, `neb.py`, `remote.py` (no real SSH target), `hd_submit_relax`/`hd_submit_bands` specifically on a GPU code (the CPU path and the analogous `hd_submit_scf`/`hd_submit_ph` GPU paths are both live-tested, but these two combinations weren't separately re-run), and the phonon chain / `hd_check_phonon_stability` on any 2D candidate (only exercised against bulk Si). Treat first real use of the untested combinations as validation, not a known-good path.
 
 ## Not yet wired up
 

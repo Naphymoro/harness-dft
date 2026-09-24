@@ -39,6 +39,33 @@ def apply_ecutwfc(base_builder, ecutwfc_ry: float):
     base_builder.pw.parameters = orm.Dict(dict=params)
 
 
+def apply_cell_dofree(base_builder, cell_dofree: str | None):
+    """Restrict which cell degrees of freedom a vc-relax step is allowed to
+    change, via QE's own CELL-namelist `cell_dofree` keyword. Only meaningful
+    on a vc-relax/vc-md step (e.g. `builder.base` of PwRelaxWorkChain, not
+    `builder.base_final_scf`, which is a fixed-cell static SCF) -- QE ignores
+    CELL entirely for calculations that don't vary the cell, so applying this
+    to a plain SCF/relax-ions-only step is a harmless no-op, not an error.
+
+    The motivating case is a 2D slab-with-vacuum structure: an unconstrained
+    vc-relax will happily relax the vacuum spacing away or tilt the cell out
+    of the xy-plane, since it has no way to know "this direction is vacuum,
+    not a real lattice vector." `cell_dofree="2Dxy"` (QE's built-in option
+    for exactly this) fixes the vacuum direction and any out-of-plane cell
+    components, relaxing only the in-plane lattice vectors and atomic
+    positions (atoms remain free to buckle out of plane -- only the *cell*
+    is constrained). See `harness_dft.twod` for building the structures this
+    is meant to be used with.
+    """
+    if cell_dofree is None:
+        return
+    from aiida import orm
+
+    params = base_builder.pw.parameters.get_dict()
+    params.setdefault("CELL", {})["cell_dofree"] = cell_dofree
+    base_builder.pw.parameters = orm.Dict(dict=params)
+
+
 def apply_calculation_settings(base_builder, kpoints_mesh: tuple[int, int, int], ecutwfc_ry: float):
     """Force an explicit k-point mesh and plane-wave cutoff onto a
     PwBaseWorkChain-level builder (i.e. one with top-level `.kpoints` and

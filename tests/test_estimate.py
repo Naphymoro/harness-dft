@@ -60,13 +60,32 @@ def test_choose_resources_stays_local_without_remote_allowed():
     assert plan.target == "local"
 
 
-def test_npool_divides_kpoint_count():
+def test_npool_divides_mpiprocs_not_kpoint_count():
+    """QE's `-npool N` requires nproc % N == 0 -- npool must divide
+    mpiprocs, not n_kpoints. (The old version of this test asserted the
+    wrong invariant, n_kpoints % npool == 0, which is what the real bug
+    this guards against actually satisfied while still crashing QE.)"""
     job = estimate_job(
         n_atoms=2, n_electrons=8, cell_volume_ang3=40.0, ecutwfc_ry=40.0, n_kpoints=6,
     )
     local = LocalResources(cpu_count=24, memory_gb=30.0, gpu_count=0)
     plan = choose_resources(job, local, allow_remote=False)
-    assert job.n_kpoints % plan.npool == 0
+    assert plan.mpiprocs % plan.npool == 0
+
+
+def test_npool_divides_mpiprocs_when_kpoint_count_shares_no_common_factor():
+    """Regression test: a 9x9x1 k-mesh (81 kpoints, factors only 3^4) against
+    an 8-rank batch used to compute npool=3 (the largest divisor of 81 that
+    is <=8) -- 3 does not divide 8, and QE's mp_start_pools aborts with
+    "invalid number of pools, parent_nproc /= nproc_pool * npool". Caught by
+    a real 2D-relax submission failing with exit_status 401/402."""
+    job = estimate_job(
+        n_atoms=2, n_electrons=6, cell_volume_ang3=60.0, ecutwfc_ry=40.0, n_kpoints=81,
+    )
+    local = LocalResources(cpu_count=24, memory_gb=30.0, gpu_count=0)
+    plan = choose_resources(job, local, allow_remote=False, cpu_batch_size=8)
+    assert plan.mpiprocs % plan.npool == 0
+    assert plan.npool == 8  # largest divisor of mpiprocs=8 that's <= 81 kpoints
 
 
 def test_quantize_mpiprocs_rounds_up_to_a_full_batch():

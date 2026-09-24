@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from ase import Atoms
 
-from harness_dft.builders import apply_calculation_settings, apply_resource_plan, get_electronic_type
+from harness_dft.builders import apply_calculation_settings, apply_cell_dofree, apply_resource_plan, get_electronic_type
 from harness_dft.pseudos import validate_family_covers_structure
 
 
@@ -20,8 +20,14 @@ def build_relax_inputs(
     allow_gpu: bool = False,
     cpu_batch_size: int = 8,
     local_atom_ceiling: int = 40,
+    cell_dofree: str | None = None,
 ):
     """Return (builder, plan) for a PwRelaxWorkChain run on `atoms`.
+
+    `cell_dofree` (e.g. `"2Dxy"` for a slab-with-vacuum structure -- see
+    `harness_dft.twod`) restricts the vc-relax step's cell degrees of
+    freedom; only applied to `base` (the vc-relax step), never
+    `base_final_scf` (a fixed-cell static SCF, where QE ignores CELL anyway).
 
     Doesn't submit -- call `aiida.engine.run_get_node(builder)` for a
     blocking run or `aiida.engine.submit(builder)` to hand it to the daemon.
@@ -48,6 +54,7 @@ def build_relax_inputs(
 
     apply_calculation_settings(builder.base, kpoints_mesh, ecutwfc_ry)
     apply_calculation_settings(builder.base_final_scf, kpoints_mesh, ecutwfc_ry)
+    apply_cell_dofree(builder.base, cell_dofree)
     resource_kwargs = dict(
         allow_remote=allow_remote, allow_gpu=allow_gpu,
         cpu_batch_size=cpu_batch_size, local_atom_ceiling=local_atom_ceiling,

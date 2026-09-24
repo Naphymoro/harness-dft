@@ -12,6 +12,7 @@ import pytest
 
 pytest.importorskip("aiida")
 
+from harness_dft_mcp.atoms_io import read_atoms  # noqa: E402
 from harness_dft_mcp.server import create_server  # noqa: E402
 
 SI_CIF = """data_Si
@@ -48,6 +49,7 @@ def test_tool_registration_covers_every_workflow(mcp):
     tools = {t.name for t in asyncio.run(mcp.list_tools())}
     expected = {
         "hd_status", "hd_list_pseudo_families", "hd_estimate", "hd_validate_pseudo_coverage",
+        "hd_generate_2d_prototype", "hd_check_phonon_stability", "hd_rank_prototypes",
         "hd_get_job", "hd_wait_for_job", "hd_get_job_results",
         "hd_submit_relax", "hd_submit_scf", "hd_submit_bands", "hd_submit_pdos",
         "hd_submit_ph", "hd_submit_q2r", "hd_submit_matdyn",
@@ -152,9 +154,63 @@ def test_estimate_quantizes_mpiprocs_to_a_batch_and_does_not_submit(mcp):
     assert before["codes"] == after["codes"]  # read-only: nothing registered/submitted
 
 
+def test_generate_2d_prototype_honeycomb_is_ready_for_2d_relax(mcp):
+    result = _call(mcp, "hd_generate_2d_prototype", {"element": "Al", "prototype": "honeycomb"})
+    assert result["n_atoms"] == 2
+    assert result["kpoints_mesh_suggestion"] == [9, 9, 1]
+    assert result["required_relax_settings"]["cell_dofree"] == "2Dxy"
+    # round-trips through read_atoms the same way any hd_submit_* tool would
+    atoms = read_atoms(result["structure_text"], result["structure_format"])
+    assert len(atoms) == 2
+    assert not atoms.pbc[2]
+
+
+def test_generate_2d_prototype_puckered_has_fourfold_cell(mcp):
+    result = _call(mcp, "hd_generate_2d_prototype", {"element": "P", "prototype": "puckered"})
+    assert result["n_atoms"] == 4
+    atoms = read_atoms(result["structure_text"], result["structure_format"])
+    assert len(atoms) == 4
+
+
 def test_validate_pseudo_coverage_covers_silicon_in_every_installed_family(mcp):
     for family in ("SSSP/1.3/PBE/efficiency", "SSSP/1.3/PBE/precision",
                    "SSSP/1.3/PBEsol/efficiency", "SSSP/1.3/PBEsol/precision"):
         result = _call(mcp, "hd_validate_pseudo_coverage",
                         {"structure_text": SI_CIF, "structure_format": "cif", "pseudo_family_label": family})
         assert result["covered"] is True, f"{family} should cover Si: {result}"
+
+
+def test_check_phonon_stability_tool_reaches_a_real_finished_matdyn_job(mcp):
+    from aiida import orm
+
+    query = orm.QueryBuilder().append(
+        orm.WorkChainNode, filters={"attributes.process_label": "MatdynBaseWorkChain"}, tag="wc",
+    ).order_by({"wc": {"id": "desc"}})
+    pk = next((node.pk for (node,) in query.iterall() if node.is_finished_ok), None)
+    if pk is None:
+        pytest.skip("no finished MatdynBaseWorkChain in this profile yet")
+
+    result = _call(mcp, "hd_check_phonon_stability", {"matdyn_pk": pk})
+    assert "stable" in result and "min_frequency_thz" in result
+
+
+def test_rank_prototypes_tool_reaches_real_finished_scf_jobs(mcp):
+    from aiida import orm
+
+    query = orm.QueryBuilder().append(
+        orm.WorkChainNode, filters={"attributes.process_label": "PwBaseWorkChain"}, tag="wc",
+    ).order_by({"wc": {"id": "desc"}})
+    pks = []
+    for (node,) in query.iterall():
+        if node.is_finished_ok:
+            params = getattr(node.outputs, "output_parameters", None)
+            if params is not None and "energy" in params.get_dict():
+                pks.append(node.pk)
+        if len(pks) >= 2:
+            break
+    if len(pks) < 2:
+        pytest.skip("need at least 2 finished SCF-like PwBaseWorkChain nodes in this profile")
+
+    result = _call(mcp, "hd_rank_prototypes", {"candidates": [{"label": f"c{i}", "pk": pk} for i, pk in enumerate(pks)]})
+    assert len(result["ranked"]) == 2
+    assert result["ground_state_label"] == result["ranked"][0]["label"]
