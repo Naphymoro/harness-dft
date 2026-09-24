@@ -12,9 +12,19 @@ from harness_dft.estimate import estimate_job, choose_resources
 from harness_dft.structures import count_valence_electrons, is_likely_metal
 
 
-def get_electronic_type(atoms: Atoms):
+def get_electronic_type(atoms: Atoms, force_metal: bool | None = None):
+    """`force_metal` overrides `is_likely_metal`'s heuristic when the caller
+    knows better -- exactly the override that heuristic's own docstring
+    anticipates. Real need: `is_likely_metal` only recognizes bulk elemental
+    metals; many 2D monolayers (puckered pnictogens especially) are
+    near-metallic even when the bulk 3D element isn't on that list, and QE's
+    default fixed-occupations (insulator) SCF can fail to converge for them
+    where smearing (metal) would work fine. Smearing costs little for a
+    structure that turns out to be a real insulator, so when in doubt for an
+    exploratory 2D candidate, force_metal=True is the safer default."""
     from aiida_quantumespresso.common.types import ElectronicType
-    return ElectronicType.METAL if is_likely_metal(atoms) else ElectronicType.INSULATOR
+    is_metal = is_likely_metal(atoms) if force_metal is None else force_metal
+    return ElectronicType.METAL if is_metal else ElectronicType.INSULATOR
 
 
 def apply_ecutwfc(base_builder, ecutwfc_ry: float):

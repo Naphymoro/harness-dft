@@ -75,17 +75,70 @@ Result: `exit_status=0`, `is_finished_ok=True`. Critically:
   aluminene is genuinely (near-)planar or has a small stable buckling is exactly the kind of question a phonon
   check (`hd_check_phonon_stability`) resolves, not a single relax at a loose (`"fast"`) protocol.
 
-## What's proven vs. what's left of the pilot
+## Full pilot results (all 8 elements)
 
-**Proven** (this element, this run): structure generation, `cell_dofree` vacuum preservation, the resource
-estimator (including the npool fix), and the full generate→relax MCP pipeline.
+Every element below was relaxed via the real MCP pipeline (`hd_generate_2d_prototype` → `hd_estimate` →
+`hd_submit_relax(cell_dofree="2Dxy")` → `hd_wait_for_job` → `hd_get_job_results`), `exit_status=0` in every case,
+vacuum spacing intact to within `3e-7 Å` of the seed in every case:
 
-**Not yet run**: the phonon chain and `hd_check_phonon_stability` on any 2D candidate (only exercised against
-bulk Si so far); the puckered prototype through a real relax (only geometry-checked, not DFT-relaxed); the
-remaining 7 pilot elements; `hd_rank_prototypes` comparing honeycomb vs. puckered for the same element (only
-exercised with two arbitrary bulk-Si SCF nodes as a mechanical sort-order check, not a real "which prototype
-wins" comparison).
+| Element | Prototype | pk | Relaxed cell (Å) | Energy/atom (eV) | `force_metal` needed? |
+|---|---|---|---|---|---|
+| Al | honeycomb | 726 | 4.486 × 4.486 × 36.0 | -536.27 | no |
+| Ga | honeycomb | 1215 | 4.255 × 4.255 × 36.0 | -3780.67 | yes (walltime failures without it were actually oversubscription, see below -- but it converged faster with smearing regardless) |
+| In | honeycomb | 800 | 4.933 × 4.933 × 36.0 | -1970.00 | no (already on `is_likely_metal`'s hardcoded list) |
+| Tl | honeycomb | 1234 | 5.138 × 5.138 × 36.0 | -1971.73 | yes |
+| P | puckered | 842 | 4.167 × 4.699 × 18.749 | -190.71 | no |
+| As | puckered | 1257 | 3.574 × 5.695 × 18.833 | -247.48 | yes |
+| Sb | puckered | 1387 | 4.085 × 6.421 × 18.973 | -2516.23 | yes -- **genuine SCF non-convergence without it** (5 restart attempts, progressively smaller mixing, still failed; converged immediately once `force_metal=True`) |
+| Bi | puckered | 1456 | 4.213 × 6.670 × 19.036 | -2520.59 | yes (needed both `force_metal=True` and a manually-extended walltime, 5400s, to avoid a restart-handler bug -- see below) |
 
-A real phonon check needs more than the Gamma-only q-mesh used for the bulk-Si validation (a single q-point
-cannot catch instabilities away from Gamma) -- a 2D q-mesh like `(4,4,1)` is a reasonable next step, at real
-additional compute cost (the phonon chain already took several minutes per q-point on bulk Si).
+**Phonon stability** (`(2,2,1)` q-mesh) was attempted for all 8. Result: **1 of 8 completed**.
+
+- **As: dynamically UNSTABLE.** `min_frequency_thz=-6.22` at Gamma and `-1.49` at `q=(0.5,0,0)` -- real, well
+  beyond the `-0.5 THz` numerical-noise tolerance, and spanning more than one q-point. This puckered arsenene
+  candidate, at this level of theory (PBE, `ecutwfc=40 Ry`, this seed geometry), is not a stable phase. This is
+  itself a real, meaningful screening result -- not every candidate should be stable, and the pipeline correctly
+  identified one that isn't.
+- **Ga, Tl, In, Bi: blocked by a real QE 7.5 crash**, not a harness bug. `ph.x` crashes within seconds at exactly
+  the point where it prints/processes point-group symmetry operations for `q=(0,0,0)` -- a Fortran runtime I/O
+  crash (`libgfortran/io/transfer.c: data_transfer_init`), multiple MPI ranks failing independently. Confirmed
+  **not** caused by: MPI rank count (reproduced identically at `mpiprocs=8` and `mpiprocs=2`), k-point pool count
+  (ph.x doesn't even receive an `-npool` flag in this workflow), or symmetry use itself (`nosym=true` in the
+  `INPUTPH` namelist did not avoid it). Correlates with the number of symmetry operations at the crash point (Ga:
+  13 sym ops, Bi: 9), not with honeycomb-vs-puckered topology (Bi is puckered and still crashes; As is puckered
+  and doesn't). AiiDA always builds QE's `CELL_PARAMETERS`/`ibrav=0` (a generic cell, never a symmetry-aware
+  `ibrav`) -- QE's own `pw.x` output for every one of these structures includes the warning `using ibrav=0 with
+  symmetry is DISCOURAGED, use correct ibrav instead`, which `pw.x` tolerates but `ph.x`'s stricter symmetry
+  machinery apparently does not, for high-enough symmetry counts. This needs either an upstream QE fix or setting
+  an explicit symmetry-matched `ibrav` for these structures (not attempted here -- real scope beyond this pilot).
+- **P, Sb: blocked by a real `aiida-quantumespresso` bug**, also not a harness bug. Both genuinely exceed even a
+  manually-extended 7200s (2 hour) walltime for a single `PhCalculation` at this q-mesh/cutoff on this hardware --
+  a real, if inconvenient, computational-cost finding (DFPT for these puckered pnictogens is expensive). When the
+  walltime handler fires and restarts, the restart hits `aiida_quantumespresso/calculations/ph.py:365`:
+  `parameters['INPUTPH'].get('electron_phonon', ...)` raises `KeyError: 'INPUTPH'` -- the restart path constructs
+  new calculation inputs that have silently dropped the `INPUTPH` namelist entirely. Reproduced identically at
+  both the original ~34-minute default walltime and the manually-extended 2-hour one. This is a genuine upstream
+  library bug (confirmed via full traceback, not inferred) that fires on *any* automatic restart of a
+  `PhCalculation`, regardless of walltime budget -- avoiding it requires either a coarser/cheaper phonon
+  calculation that finishes in one shot, or a fix/patch to `aiida-quantumespresso` itself, neither attempted here.
+
+**Two more real bugs this pilot caught in the harness itself, both fixed** (see "Real bugs found" above for the
+first: `npool`): the electronic-type heuristic had no override hook (`force_metal` added, directly unblocking
+Sb's real convergence failure); nothing else new during the full-pilot run beyond what's documented above.
+
+## What's proven vs. what's left
+
+**Proven**: structure generation (all 8 elements, numerically verified geometry), `cell_dofree="2Dxy"` vacuum
+preservation (all 8, to 7 significant figures), the resource estimator including the `npool` fix, the
+`force_metal` override (directly fixed Sb's real convergence failure), and one complete
+generate→relax→phonon→stability verdict (As: correctly identified as unstable).
+
+**Not resolved, and out of scope for further iteration in this pilot**: the QE 7.5 `ph.x` symmetry-count crash
+(4 elements blocked), and the `aiida-quantumespresso` restart-handler `INPUTPH` bug (2 elements blocked). Both
+are real, root-caused, reproducible external bugs, not harness logic errors -- fixing either is a genuine
+follow-up project (upstream QE investigation / an `ibrav` fix for the former; an `aiida-quantumespresso` patch or
+workaround for the latter), not something to paper over with more resource-parameter tuning.
+
+`hd_rank_prototypes` was only exercised as a mechanical sort-order check (two arbitrary bulk-Si SCF nodes), never
+on a real "which prototype wins" comparison -- with only As having a complete stability verdict among the 8, and
+no element having *two* prototypes both taken to completion, there is nothing to rank yet in this pilot.

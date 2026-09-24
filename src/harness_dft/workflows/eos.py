@@ -28,8 +28,12 @@ def build_scf_inputs(
     allow_gpu: bool = False,
     cpu_batch_size: int = 8,
     local_atom_ceiling: int = 40,
+    force_metal: bool | None = None,
 ):
-    """Return (builder, plan) for a single-point SCF via PwBaseWorkChain."""
+    """Return (builder, plan) for a single-point SCF via PwBaseWorkChain.
+
+    `force_metal` overrides the electronic-type heuristic -- see
+    `build_relax_inputs`'s docstring for why this matters."""
     from aiida import orm
     from aiida.orm import load_code
     from aiida.plugins import WorkflowFactory
@@ -38,7 +42,7 @@ def build_scf_inputs(
 
     code = load_code(code_label)
     structure = orm.StructureData(ase=atoms)
-    electronic_type = get_electronic_type(atoms)
+    electronic_type = get_electronic_type(atoms, force_metal=force_metal)
 
     PwBaseWorkChain = WorkflowFactory("quantumespresso.pw.base")
     builder = PwBaseWorkChain.get_builder_from_protocol(

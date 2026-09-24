@@ -292,6 +292,7 @@ def create_server(settings=None, host="127.0.0.1", port=8000):
         cpu_batch_size: Annotated[int, Field(ge=1, le=256)] = 8,
         local_atom_ceiling: int = 40,
         cell_dofree: Annotated[str | None, Field(description='QE CELL-namelist cell_dofree, e.g. "2Dxy" for a slab-with-vacuum structure (see hd_generate_2d_prototype) so vc-relax only relaxes in-plane. Leave unset for a normal 3D bulk relax.')] = None,
+        force_metal: Annotated[bool | None, Field(description="Override the electronic-type heuristic. Set True if SCF fails to converge with fixed occupations on a structure that might be near-metallic (common for 2D pnictogen/post-transition-metal monolayers even when the bulk element isn't metallic) -- smearing costs little if the structure turns out to be a real insulator.")] = None,
     ) -> dict:
         """Submit a structure relaxation (PwRelaxWorkChain). Returns immediately
         with a pk; poll with hd_wait_for_job. `code_label` must match the
@@ -306,7 +307,7 @@ def create_server(settings=None, host="127.0.0.1", port=8000):
             atoms, code_label, pseudo_family_label=pseudo_family_label, protocol=protocol,
             kpoints_mesh=kpoints_mesh, ecutwfc_ry=ecutwfc_ry, allow_remote=allow_remote,
             allow_gpu=allow_gpu, cpu_batch_size=cpu_batch_size, local_atom_ceiling=local_atom_ceiling,
-            cell_dofree=cell_dofree,
+            cell_dofree=cell_dofree, force_metal=force_metal,
         )
         pk = submit_builder(builder, label="harness-dft relax (MCP)")
         return {"pk": pk, "plan": _plan_dict(plan)}
@@ -326,6 +327,7 @@ def create_server(settings=None, host="127.0.0.1", port=8000):
         allow_gpu: bool = False,
         cpu_batch_size: Annotated[int, Field(ge=1, le=256)] = 8,
         local_atom_ceiling: int = 40,
+        force_metal: Annotated[bool | None, Field(description="Override the electronic-type heuristic -- see hd_submit_relax.")] = None,
     ) -> dict:
         """Submit a single-point SCF (PwBaseWorkChain). This is the building
         block for equation-of-state and convergence work: call it once per
@@ -341,6 +343,7 @@ def create_server(settings=None, host="127.0.0.1", port=8000):
             atoms, code_label, pseudo_family_label=pseudo_family_label, protocol=protocol,
             kpoints_mesh=kpoints_mesh, ecutwfc_ry=ecutwfc_ry, allow_remote=allow_remote,
             allow_gpu=allow_gpu, cpu_batch_size=cpu_batch_size, local_atom_ceiling=local_atom_ceiling,
+            force_metal=force_metal,
         )
         pk = submit_builder(builder, label="harness-dft scf (MCP)")
         return {"pk": pk, "plan": _plan_dict(plan), "cell_volume_ang3": atoms.get_volume()}

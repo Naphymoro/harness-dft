@@ -21,6 +21,7 @@ def build_relax_inputs(
     cpu_batch_size: int = 8,
     local_atom_ceiling: int = 40,
     cell_dofree: str | None = None,
+    force_metal: bool | None = None,
 ):
     """Return (builder, plan) for a PwRelaxWorkChain run on `atoms`.
 
@@ -28,6 +29,12 @@ def build_relax_inputs(
     `harness_dft.twod`) restricts the vc-relax step's cell degrees of
     freedom; only applied to `base` (the vc-relax step), never
     `base_final_scf` (a fixed-cell static SCF, where QE ignores CELL anyway).
+
+    `force_metal` overrides the electronic-type heuristic (see
+    `get_electronic_type`) -- real need: `is_likely_metal` doesn't know a 2D
+    monolayer of a nominally non-metallic element can be near-metallic, and
+    QE's fixed-occupations (insulator) SCF can fail to converge there where
+    smearing (metal) works fine.
 
     Doesn't submit -- call `aiida.engine.run_get_node(builder)` for a
     blocking run or `aiida.engine.submit(builder)` to hand it to the daemon.
@@ -40,7 +47,7 @@ def build_relax_inputs(
 
     code = load_code(code_label)
     structure = orm.StructureData(ase=atoms)
-    electronic_type = get_electronic_type(atoms)
+    electronic_type = get_electronic_type(atoms, force_metal=force_metal)
 
     PwRelaxWorkChain = WorkflowFactory("quantumespresso.pw.relax")
     pseudo_override = {"pseudo_family": pseudo_family_label}
